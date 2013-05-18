@@ -2,7 +2,8 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-// Package npipe provides a pure Go wrapper around Windows Named Pipes.
+// Package npipe provides a pure Go wrapper around Windows Named Pipes implementing the net.Listener
+// and net.Conn interfaces
 // See http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
 package npipe
 
@@ -66,6 +67,7 @@ type PipeAddr string
 // Network returns the address's network name, "pipe".
 func (a PipeAddr) Network() string { return "pipe" }
 
+// String returns the address of the pipe
 func (a PipeAddr) String() string {
 	return string(a)
 }
@@ -78,7 +80,8 @@ type PipeListener struct {
 	closed bool
 }
 
-// New returns a new PipeListener that will listen on a pipe with the given name
+// New returns a new PipeListener that will listen on a pipe with the given address
+// The address must be of the form \\.\pipe\<name>
 func Listen(address string) (*PipeListener, error) {
 	handle, err := createPipe(address)
 	if err != nil {
@@ -87,8 +90,7 @@ func Listen(address string) (*PipeListener, error) {
 	return &PipeListener{PipeAddr(address), handle, false}, nil
 }
 
-// AcceptPipe accepts the next incoming call and returns the new
-// connection
+// AcceptPipe accepts the next incoming call and returns the new connection
 func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if l == nil || l.addr == "" || l.closed {
 		return nil, syscall.EINVAL
@@ -115,7 +117,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	return &PipeConn{handle, l.addr, true}, nil
 }
 
-// Accept implements the Accept method in the Listener interface; it
+// Accept implements the Accept method in the net.Listener interface; it
 // waits for the next call and returns a generic Conn.
 func (l *PipeListener) Accept() (net.Conn, error) {
 	c, err := l.AcceptPipe()
@@ -135,22 +137,27 @@ func (l *PipeListener) Close() error {
 // Addr returns the listener's network address, a PipeAddr.
 func (l *PipeListener) Addr() net.Addr { return l.addr }
 
+// PipeConn is the implementation of the net.Conn interface for named pipe connections.
 type PipeConn struct {
 	handle   syscall.Handle
 	addr     PipeAddr
 	isserver bool
 }
 
+// Read implements the net.Conn Read method.
 func (c *PipeConn) Read(b []byte) (int, error) {
 	return syscall.Read(c.handle, b)
 }
 
+// Write implements the net.Conn Write method.
 func (c *PipeConn) Write(b []byte) (int, error) {
 	return syscall.Write(c.handle, b)
 }
 
+// Close closes the connection.
 func (c *PipeConn) Close() error {
-	// not really sure what the difference is
+	// not really sure what the difference is, but disconnect is definitely only server side
+	// so use that here.
 	if c.isserver {
 		return disconnect(c.handle)
 	}
@@ -162,47 +169,67 @@ func (c *PipeConn) LocalAddr() net.Addr {
 	return c.addr
 }
 
+// RemoteAddr returns the remote network address.
 func (c *PipeConn) RemoteAddr() net.Addr {
 	// not sure what to do here, we don't have remote addr....
 	return c.addr
 }
 
+// SetDeadline implements the net.Conn SetDeadline method.
 func (c *PipeConn) SetDeadline(t time.Time) error {
 	return nil
 }
 
+// SetReadDeadline implements the net.Conn SetReadDeadline method.
 func (c *PipeConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+// SetWriteDeadline implements the net.Conn SetWriteDeadline method.
 func (c *PipeConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
+// Dial connects to a named pipe with the given address. The address should be of the form
+// \\.\\pipe\<name> for local pipes and \\<computer>\pipe\<name> for network pipes
 func Dial(address string) (*PipeConn, error) {
 	name, err := syscall.UTF16PtrFromString(string(address))
 	if err != nil {
 		return nil, err
 	}
 	for {
-		handle, err := syscall.CreateFile(name, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, 0, 0)
+		// this will fail on badly formatted pipe names
+		if err := wait(name, nmpwait_wait_forever); err != nil {
+			return nil, err
+		}
+		// create file, when given the path of a pipe, will open the client side of the connection
+		handle, err := syscall.CreateFile(
+			name,
+			syscall.GENERIC_READ|syscall.GENERIC_WRITE,
+			0,
+			nil,
+			syscall.OPEN_EXISTING,
+			0,
+			0)
 		if err == nil {
 			return &PipeConn{handle, PipeAddr(address), false}, nil
 		}
+
+		// pipe busy means another client just grabbed the open pipe end, and the server hasn't made
+		// a new one yet.
 		if err != error_pipe_busy {
-			return nil, err
-		}
-		if err := wait(name, nmpwait_wait_forever); err != nil {
 			return nil, err
 		}
 	}
 }
 
+// createPipe is a helper function to make sure we always create pipes with the same arguments,
+// since subsequent calls to create pipe need to use the same arguments as the first one
 func createPipe(address string) (syscall.Handle, error) {
-	name, err := syscall.UTF16PtrFromString(address)
+	n, err := syscall.UTF16PtrFromString(address)
 	if err != nil {
 		return 0, err
 	}
 
-	return create(name, pipe_access_duplex, pipe_type_byte, pipe_unlimited_instances, 512, 512, 1000, nil)
+	return create(n, pipe_access_duplex, pipe_type_byte, pipe_unlimited_instances, 512, 512, 0, nil)
 }
