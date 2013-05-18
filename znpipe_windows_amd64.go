@@ -9,9 +9,11 @@ import "syscall"
 var (
 	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-	procCreateNamedPipeW    = modkernel32.NewProc("CreateNamedPipeW")
-	procConnectNamedPipe    = modkernel32.NewProc("ConnectNamedPipe")
+	procCreateNamedPipeW = modkernel32.NewProc("CreateNamedPipeW")
+	procConnectNamedPipe = modkernel32.NewProc("ConnectNamedPipe")
 	procDisconnectNamedPipe = modkernel32.NewProc("DisconnectNamedPipe")
+	procWaitNamedPipeW = modkernel32.NewProc("WaitNamedPipeW")
+
 )
 
 func create(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error) {
@@ -50,3 +52,17 @@ func disconnect(handle syscall.Handle) (err error) {
 	}
 	return
 }
+
+func wait(name *uint16, timeout uint32) (err error) {
+	r1, _, e1 := syscall.Syscall(procWaitNamedPipeW.Addr(), 2, uintptr(unsafe.Pointer(name)), uintptr(timeout), 0)
+	if r1 == 0 {
+		if e1 != 0 {
+			err = error(e1)
+		} else {
+			err = syscall.EINVAL
+		}
+	}
+	return
+}
+
+

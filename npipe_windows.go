@@ -2,13 +2,14 @@
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
 
-// Package Pipe provides a pure Go wrapper around Windows Named Pipes.
-// See http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780(v=vs.85).aspx
+// Package npipe provides a pure Go wrapper around Windows Named Pipes.
+// See http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
 package npipe
 
 //sys create(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error)  [failretval==syscall.InvalidHandle] = CreateNamedPipeW
 //sys connect(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = ConnectNamedPipe
 //sys disconnect(handle syscall.Handle) (err error) = DisconnectNamedPipe
+//sys wait(name *uint16, timeout uint32) (err error) = WaitNamedPipeW
 
 import (
 	"net"
@@ -50,12 +51,16 @@ const (
 
 	pipe_unlimited_instances = 255
 
-	// the not-an-error that occurs if a client connects to the pipe between
+	nmpwait_wait_forever = 0xFFFFFFFF
+
+	// this not-an-error that occurs if a client connects to the pipe between
 	// the server's CreateNamedPipe and ConnectNamedPipe calls
 	error_pipe_connected syscall.Errno = 0x217
+	error_pipe_busy      syscall.Errno = 0xE7
+	error_sem_timeout    syscall.Errno = 0x79
 )
 
-// PipeAddr represents the address of a named pipe end point.
+// PipeAddr represents the address of a named pipe.
 type PipeAddr string
 
 // Network returns the address's network name, "pipe".
@@ -65,7 +70,7 @@ func (a PipeAddr) String() string {
 	return string(a)
 }
 
-// PipeListener is a named pipe network listener.  Clients should typically
+// PipeListener is a named pipe listener. Clients should typically
 // use variables of type Listener instead of assuming named pipe.
 type PipeListener struct {
 	addr   PipeAddr
@@ -83,7 +88,7 @@ func Listen(address string) (*PipeListener, error) {
 }
 
 // AcceptPipe accepts the next incoming call and returns the new
-// connection and the remote address.
+// connection
 func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if l == nil || l.addr == "" || l.closed {
 		return nil, syscall.EINVAL
@@ -91,7 +96,8 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 
 	// the first time we call accept, the handle will have been created by the Listen
 	// call. This is to prevent race conditions where the client thinks the server
-	// isn't listening. After the first time, we'll have to create a new handle
+	// isn't listening because it hasn't actually called create yet. After the first time, we'll
+	// have to create a new handle each time
 	handle := l.handle
 	if handle == 0 {
 		var err error
@@ -178,11 +184,18 @@ func Dial(address string) (*PipeConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	handle, err := syscall.CreateFile(name, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, 0, 0)
-	if err != nil {
-		return nil, err
+	for {
+		handle, err := syscall.CreateFile(name, syscall.GENERIC_READ|syscall.GENERIC_WRITE, 0, nil, syscall.OPEN_EXISTING, 0, 0)
+		if err == nil {
+			return &PipeConn{handle, PipeAddr(address), false}, nil
+		}
+		if err != error_pipe_busy {
+			return nil, err
+		}
+		if err := wait(name, nmpwait_wait_forever); err != nil {
+			return nil, err
+		}
 	}
-	return &PipeConn{handle, PipeAddr(address), false}, nil
 }
 
 func createPipe(address string) (syscall.Handle, error) {

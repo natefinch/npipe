@@ -12,6 +12,7 @@ var (
 	procCreateNamedPipeW = modkernel32.NewProc("CreateNamedPipeW")
 	procConnectNamedPipe = modkernel32.NewProc("ConnectNamedPipe")
 	procDisconnectNamedPipe = modkernel32.NewProc("DisconnectNamedPipe")
+	procWaitNamedPipeW = modkernel32.NewProc("WaitNamedPipeW")
 
 )
 
@@ -42,6 +43,18 @@ func connect(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) 
 
 func disconnect(handle syscall.Handle) (err error) {
 	r1, _, e1 := syscall.Syscall(procDisconnectNamedPipe.Addr(), 1, uintptr(handle), 0, 0)
+	if r1 == 0 {
+		if e1 != 0 {
+			err = error(e1)
+		} else {
+			err = syscall.EINVAL
+		}
+	}
+	return
+}
+
+func wait(name *uint16, timeout uint32) (err error) {
+	r1, _, e1 := syscall.Syscall(procWaitNamedPipeW.Addr(), 2, uintptr(unsafe.Pointer(name)), uintptr(timeout), 0)
 	if r1 == 0 {
 		if e1 != 0 {
 			err = error(e1)
