@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -13,8 +12,6 @@ import (
 const (
 	clientMsg = "Hi server!\n"
 	serverMsg = "Hi there, client!\n"
-
-	error_bad_pathname syscall.Errno = 0xA1
 
 	fn = `C:\62DA0493-99A1-4327-B5A8-6C4E4466C3FC.txt`
 )
@@ -25,8 +22,8 @@ func TestBadDial(t *testing.T) {
 	ns := []string{fn, "http://www.google.com", "somethingbadhere"}
 	for _, n := range ns {
 		c, err := Dial(n)
-		if err != error_bad_pathname {
-			t.Errorf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", n, error_bad_pathname, err)
+		if err != ERROR_BAD_PATHNAME {
+			t.Errorf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", n, ERROR_BAD_PATHNAME, err)
 		}
 		if c != nil {
 			t.Errorf("Dialing invalid pipe name '%s' should return nil connection", n)
@@ -48,8 +45,8 @@ func TestDialExistingFile(t *testing.T) {
 		defer os.Remove(fn)
 	}
 	c, err := Dial(fn)
-	if err != error_bad_pathname {
-		t.Errorf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", fn, error_bad_pathname, err)
+	if err != ERROR_BAD_PATHNAME {
+		t.Errorf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", fn, ERROR_BAD_PATHNAME, err)
 	}
 	if c != nil {
 		t.Errorf("Dialing invalid pipe name '%s' should return nil connection", fn)
