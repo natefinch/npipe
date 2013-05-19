@@ -46,10 +46,10 @@ func TestDialExistingFile(t *testing.T) {
 	}
 	c, err := Dial(fn)
 	if err != ERROR_BAD_PATHNAME {
-		t.Errorf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", fn, ERROR_BAD_PATHNAME, err)
+		t.Fatalf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", fn, ERROR_BAD_PATHNAME, err)
 	}
 	if c != nil {
-		t.Errorf("Dialing invalid pipe name '%s' should return nil connection", fn)
+		t.Fatalf("Dialing invalid pipe name '%s' should return nil connection", fn)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestCommonUseCase(t *testing.T) {
 
 	ln, err := Listen(address)
 	if err != nil {
-		t.Error("Error starting to listen on pipe: ", err)
+		t.Fatal("Error starting to listen on pipe: ", err)
 	}
 
 	for x := 0; x < clients; x++ {
@@ -79,7 +79,7 @@ func TestCommonUseCase(t *testing.T) {
 	select {
 	case <-quit:
 	case <-time.After(time.Second):
-		t.Error("Failed to receive quit message after a reasonable timeout")
+		t.Fatal("Failed to receive quit message after a reasonable timeout")
 	}
 }
 
@@ -99,7 +99,7 @@ func startServer(ln *PipeListener, iter int, t *testing.T) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			t.Error("Error accepting connection: ", err)
+			t.Fatal("Error accepting connection: ", err)
 		}
 		go handleConnection(conn, iter, t)
 	}
@@ -112,18 +112,18 @@ func handleConnection(conn net.Conn, convos int, t *testing.T) {
 	for x := 0; x < convos; x++ {
 		msg, err := r.ReadString('\n')
 		if err != nil {
-			t.Error("Error reading from server connection: ", err)
+			t.Fatal("Error reading from server connection: ", err)
 		}
 		if msg != clientMsg {
-			t.Errorf("Read incorrect message from client. Expected '%s', got '%s'", clientMsg, msg)
+			t.Fatalf("Read incorrect message from client. Expected '%s', got '%s'", clientMsg, msg)
 		}
 
 		if _, err := fmt.Fprint(conn, serverMsg); err != nil {
-			t.Error("Error on server writing to pipe: ", err)
+			t.Fatal("Error on server writing to pipe: ", err)
 		}
 	}
 	if err := conn.Close(); err != nil {
-		t.Error("Error closing server side of connection: ", err)
+		t.Fatal("Error closing server side of connection: ", err)
 	}
 }
 
@@ -138,25 +138,25 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 	select {
 	case conn = <-c:
 	case <-time.After(250 * time.Millisecond):
-		t.Error("Client timed out waiting for dial to resolve")
+		t.Fatal("Client timed out waiting for dial to resolve")
 	}
 	r := bufio.NewReader(conn)
 	for x := 0; x < convos; x++ {
 		if _, err := fmt.Fprint(conn, clientMsg); err != nil {
-			t.Error("Error on client writing to pipe: ", err)
+			t.Fatal("Error on client writing to pipe: ", err)
 		}
 
 		msg, err := r.ReadString('\n')
 		if err != nil {
-			t.Error("Error reading from client connection: ", err)
+			t.Fatal("Error reading from client connection: ", err)
 		}
 		if msg != serverMsg {
-			t.Errorf("Read incorrect message from server. Expected '%s', got '%s'", serverMsg, msg)
+			t.Fatalf("Read incorrect message from server. Expected '%s', got '%s'", serverMsg, msg)
 		}
 	}
 
 	if err := conn.Close(); err != nil {
-		t.Error("Error closing client side of pipe", err)
+		t.Fatal("Error closing client side of pipe", err)
 	}
 	done <- true
 }
@@ -166,7 +166,7 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 func dial(address string, c chan *PipeConn, t *testing.T) {
 	conn, err := Dial(address)
 	if err != nil {
-		t.Error("Error from dial: ", err)
+		t.Fatal("Error from dial: ", err)
 	}
 	c <- conn
 }

@@ -41,6 +41,7 @@ package npipe
 
 import (
 	"net"
+	"os"
 	"syscall"
 	"time"
 )
@@ -114,22 +115,15 @@ func Dial(address string) (*PipeConn, error) {
 		if err := wait(name, nmpwait_wait_forever); err != nil {
 			return nil, err
 		}
-		// create file, when given the path of a pipe, will open the client side of the connection
-		handle, err := syscall.CreateFile(
-			name,
-			syscall.GENERIC_READ|syscall.GENERIC_WRITE,
-			0,
-			nil,
-			syscall.OPEN_EXISTING,
-			0,
-			0)
+		f, err := os.OpenFile(address, os.O_RDWR, os.ModePerm|os.ModeNamedPipe)
+
 		if err == nil {
-			return &PipeConn{handle, PipeAddr(address), false}, nil
+			return &PipeConn{file: f, addr: PipeAddr(address)}, nil
 		}
 
 		// pipe busy means another client just grabbed the open pipe end, and the server hasn't made
 		// a new one yet.
-		if err != error_pipe_busy {
+		if err.(*os.PathError).Err != error_pipe_busy {
 			return nil, err
 		}
 	}
@@ -181,7 +175,8 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if err := connect(handle, nil); err != nil && err != error_pipe_connected {
 		return nil, err
 	}
-	return &PipeConn{handle, l.addr, true}, nil
+	f := os.NewFile(uintptr(handle), l.addr.String())
+	return &PipeConn{file: f, addr: l.addr}, nil
 }
 
 // Close stops listening on the address.
@@ -196,29 +191,27 @@ func (l *PipeListener) Addr() net.Addr { return l.addr }
 
 // PipeConn is the implementation of the net.Conn interface for named pipe connections.
 type PipeConn struct {
-	handle   syscall.Handle
-	addr     PipeAddr
-	isserver bool
+	file *os.File
+	addr PipeAddr
+
+	// these aren't actually used yet
+	readDeadline  time.Time
+	writeDeadline time.Time
 }
 
 // Read implements the net.Conn Read method.
 func (c *PipeConn) Read(b []byte) (int, error) {
-	return syscall.Read(c.handle, b)
+	return c.file.Read(b)
 }
 
 // Write implements the net.Conn Write method.
 func (c *PipeConn) Write(b []byte) (int, error) {
-	return syscall.Write(c.handle, b)
+	return c.file.Write(b)
 }
 
 // Close closes the connection.
 func (c *PipeConn) Close() error {
-	// not really sure what the difference is, but disconnect is definitely only server side
-	// so use that here.
-	if c.isserver {
-		return disconnect(c.handle)
-	}
-	return syscall.Close(c.handle)
+	return c.file.Close()
 }
 
 // LocalAddr returns the local network address.
@@ -234,16 +227,20 @@ func (c *PipeConn) RemoteAddr() net.Addr {
 
 // SetDeadline implements the net.Conn SetDeadline method.
 func (c *PipeConn) SetDeadline(t time.Time) error {
+	c.SetReadDeadline(t)
+	c.SetWriteDeadline(t)
 	return nil
 }
 
 // SetReadDeadline implements the net.Conn SetReadDeadline method.
 func (c *PipeConn) SetReadDeadline(t time.Time) error {
+	c.readDeadline = t
 	return nil
 }
 
 // SetWriteDeadline implements the net.Conn SetWriteDeadline method.
 func (c *PipeConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline = t
 	return nil
 }
 
