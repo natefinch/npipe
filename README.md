@@ -7,9 +7,9 @@ See documentation at http://godoc.org/github.com/natefinch/npipe
 
 Written for Go 1.1.
 
-### What's Missing
+### Notes
 
-Timeouts for the connections are currently not implemented.
+Deadlines for reading/writing to the connection are only functional in Windows Vista/Server 2008 and above, due to limitations with the Windows API.
 
 
 ### How to Build
