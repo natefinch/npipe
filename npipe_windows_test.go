@@ -53,7 +53,7 @@ func TestDialExistingFile(t *testing.T) {
 	}
 }
 
-// TestBadListen tests that if you listen on a bad address, that we get back ERROR_INVALID_NAME
+// TestBadListen tests that if you listen on a bad address, that we get back a PipeError
 func TestBadListen(t *testing.T) {
 	addr := "not a valid pipe address"
 	ln, err := Listen(addr)
