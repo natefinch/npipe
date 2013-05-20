@@ -16,26 +16,26 @@ const (
 	fn = `C:\62DA0493-99A1-4327-B5A8-6C4E4466C3FC.txt`
 )
 
-// TestBadDial tests that if you dial something other than a valid pipe path, that you get a sensible error
-// and that you don't accidently create a file on disk (since dial uses CreateFile)
+// TestBadDial tests that if you dial something other than a valid pipe path, that you get back a PipeError
+// and that you don't accidently create a file on disk (since dial uses OpenFile)
 func TestBadDial(t *testing.T) {
 	ns := []string{fn, "http://www.google.com", "somethingbadhere"}
 	for _, n := range ns {
 		c, err := Dial(n)
-		if err != ERROR_BAD_PATHNAME {
-			t.Errorf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", n, ERROR_BAD_PATHNAME, err)
+		if _, ok := err.(PipeError); !ok {
+			t.Errorf("Dialing invalid pipe address '%s' did not result in correct error! Expected PipeError, got '%v'", n, err)
 		}
 		if c != nil {
-			t.Errorf("Dialing invalid pipe name '%s' should return nil connection", n)
+			t.Errorf("Dialing invalid pipe address '%s' returned non-nil connection", n)
 		}
 		if b, _ := exists(n); b {
-			t.Errorf("Dialing invalid pipe name '%s' incorrectly created file on disk", n)
+			t.Errorf("Dialing invalid pipe address '%s' incorrectly created file on disk", n)
 		}
 	}
 }
 
 // TestDialExistingFile tests that if you dial with the name of an existing file,
-// that you don't accidentally open the file (since dial uses CreateFile with OPEN_EXISTING)
+// that you don't accidentally open the file (since dial uses OpenFile)
 func TestDialExistingFile(t *testing.T) {
 	if f, err := os.Create(fn); err != nil {
 		t.Fatalf("Unexpected error creating file '%s': '%v'", fn, err)
@@ -45,11 +45,23 @@ func TestDialExistingFile(t *testing.T) {
 		defer os.Remove(fn)
 	}
 	c, err := Dial(fn)
-	if err != ERROR_BAD_PATHNAME {
-		t.Fatalf("Dialing invalid pipe name '%s' did not result in error! Expected: '%v', got '%v'", fn, ERROR_BAD_PATHNAME, err)
+	if _, ok := err.(PipeError); !ok {
+		t.Errorf("Dialing invalid pipe address '%s' did not result in error! Expected PipeError, got '%v'", fn, err)
 	}
 	if c != nil {
-		t.Fatalf("Dialing invalid pipe name '%s' should return nil connection", fn)
+		t.Errorf("Dialing invalid pipe address '%s' returned non-nil connection", fn)
+	}
+}
+
+// TestBadListen tests that if you listen on a bad address, that we get back ERROR_INVALID_NAME
+func TestBadListen(t *testing.T) {
+	addr := "not a valid pipe address"
+	ln, err := Listen(addr)
+	if _, ok := err.(PipeError); !ok {
+		t.Errorf("Listening on invalid pipe address '%s' did not result in correct error! Expected PipeError, got '%v'", addr, err)
+	}
+	if ln != nil {
+		t.Error("Listening on a bad address '%s' returned non-nil listener.", addr)
 	}
 }
 

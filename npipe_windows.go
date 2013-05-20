@@ -40,6 +40,7 @@ package npipe
 //sys wait(name *uint16, timeout uint32) (err error) = WaitNamedPipeW
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"syscall"
@@ -88,8 +89,17 @@ const (
 	error_pipe_busy      syscall.Errno = 0xE7
 	error_sem_timeout    syscall.Errno = 0x79
 
-	ERROR_BAD_PATHNAME syscall.Errno = 0xA1
+	error_bad_pathname syscall.Errno = 0xA1
+	error_invalid_name syscall.Errno = 0x7B
 )
+
+type PipeError struct {
+	address string
+}
+
+func (e PipeError) Error() string {
+	return fmt.Sprintf("Invalid pipe address '%s'", e.address)
+}
 
 // Dial connects to a named pipe with the given address. If the specified pipe is not available,
 // it will wait indefinitely for the pipe to become available.
@@ -97,7 +107,7 @@ const (
 // The address must be of the form \\.\\pipe\<name> for local pipes and \\<computer>\pipe\<name>
 // for remote pipes.
 //
-// Dial will return ERROR_BAD_PATHNAME if you pass in a badly formatted pipe name.
+// Dial will return a PipeError if you pass in a badly formatted pipe name.
 //
 // Examples:
 //   // local pipe
@@ -113,6 +123,9 @@ func Dial(address string) (*PipeConn, error) {
 	for {
 		// this will fail on badly formatted pipe names
 		if err := wait(name, nmpwait_wait_forever); err != nil {
+			if err == error_bad_pathname {
+				return nil, PipeError{address}
+			}
 			return nil, err
 		}
 		f, err := os.OpenFile(address, os.O_RDWR, os.ModePerm|os.ModeNamedPipe)
@@ -132,13 +145,24 @@ func Dial(address string) (*PipeConn, error) {
 // New returns a new PipeListener that will listen on a pipe with the given address.
 // The address must be of the form \\.\pipe\<name>
 //
-// Listen will return ERROR_BAD_PATHNAME for an incorrectly formatted pipe name.
+// Listen will return a PipeError for an incorrectly formatted pipe name.
 func Listen(address string) (*PipeListener, error) {
 	handle, err := createPipe(address)
+	if err == error_invalid_name {
+		return nil, PipeError{address}
+	}
 	if err != nil {
 		return nil, err
 	}
 	return &PipeListener{PipeAddr(address), handle, false}, nil
+}
+
+// PipeListener is a named pipe listener. Clients should typically
+// use variables of type net.Listener instead of assuming named pipe.
+type PipeListener struct {
+	addr   PipeAddr
+	handle syscall.Handle
+	closed bool
 }
 
 // Accept implements the Accept method in the net.Listener interface; it
@@ -182,7 +206,15 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 // Close stops listening on the address.
 // Already Accepted connections are not closed.
 func (l *PipeListener) Close() error {
+	if l.closed {
+		return nil
+	}
 	l.closed = true
+	if l.handle != 0 {
+		err := disconnect(l.handle)
+		l.handle = 0
+		return err
+	}
 	return nil
 }
 
@@ -253,14 +285,6 @@ func (a PipeAddr) Network() string { return "pipe" }
 // String returns the address of the pipe
 func (a PipeAddr) String() string {
 	return string(a)
-}
-
-// PipeListener is a named pipe listener. Clients should typically
-// use variables of type net.Listener instead of assuming named pipe.
-type PipeListener struct {
-	addr   PipeAddr
-	handle syscall.Handle
-	closed bool
 }
 
 // createPipe is a helper function to make sure we always create pipes with the same arguments,
