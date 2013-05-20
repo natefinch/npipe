@@ -16,7 +16,7 @@ var (
 
 )
 
-func create(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error) {
+func createNamedPipe(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error) {
 	r0, _, e1 := syscall.Syscall9(procCreateNamedPipeW.Addr(), 8, uintptr(unsafe.Pointer(name)), uintptr(openMode), uintptr(pipeMode), uintptr(maxInstances), uintptr(outBufSize), uintptr(inBufSize), uintptr(defaultTimeout), uintptr(unsafe.Pointer(sa)), 0)
 	handle = syscall.Handle(r0)
 	if handle == syscall.InvalidHandle {
@@ -29,7 +29,7 @@ func create(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32,
 	return
 }
 
-func connect(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) {
+func connectNamedPipe(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) {
 	r1, _, e1 := syscall.Syscall(procConnectNamedPipe.Addr(), 2, uintptr(handle), uintptr(unsafe.Pointer(overlapped)), 0)
 	if r1 == 0 {
 		if e1 != 0 {
@@ -41,7 +41,7 @@ func connect(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) 
 	return
 }
 
-func disconnect(handle syscall.Handle) (err error) {
+func disconnectNamedPipe(handle syscall.Handle) (err error) {
 	r1, _, e1 := syscall.Syscall(procDisconnectNamedPipe.Addr(), 1, uintptr(handle), 0, 0)
 	if r1 == 0 {
 		if e1 != 0 {
@@ -53,7 +53,7 @@ func disconnect(handle syscall.Handle) (err error) {
 	return
 }
 
-func wait(name *uint16, timeout uint32) (err error) {
+func waitNamedPipe(name *uint16, timeout uint32) (err error) {
 	r1, _, e1 := syscall.Syscall(procWaitNamedPipeW.Addr(), 2, uintptr(unsafe.Pointer(name)), uintptr(timeout), 0)
 	if r1 == 0 {
 		if e1 != 0 {

@@ -34,10 +34,10 @@
 //   }
 package npipe
 
-//sys create(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error)  [failretval==syscall.InvalidHandle] = CreateNamedPipeW
-//sys connect(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = ConnectNamedPipe
-//sys disconnect(handle syscall.Handle) (err error) = DisconnectNamedPipe
-//sys wait(name *uint16, timeout uint32) (err error) = WaitNamedPipeW
+//sys createNamedPipe(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error)  [failretval==syscall.InvalidHandle] = CreateNamedPipeW
+//sys connectNamedPipe(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = ConnectNamedPipe
+//sys disconnectNamedPipe(handle syscall.Handle) (err error) = DisconnectNamedPipe
+//sys waitNamedPipe(name *uint16, timeout uint32) (err error) = WaitNamedPipeW
 
 import (
 	"fmt"
@@ -93,16 +93,30 @@ const (
 	error_invalid_name syscall.Errno = 0x7B
 )
 
+// PipeError is an error related to a call to a pipe
 type PipeError struct {
-	address string
+	msg     string
+	timeout bool
 }
 
+// Error implements the error interface
 func (e PipeError) Error() string {
-	return fmt.Sprintf("Invalid pipe address '%s'", e.address)
+	return e.msg
+}
+
+// Timeout implements net.AddrError.Timeout()
+func (e PipeError) Timeout() bool {
+	return e.timeout
+}
+
+// Temporary implements net.AddrError.Temporary()
+func (e PipeError) Temporary() bool {
+	return false
 }
 
 // Dial connects to a named pipe with the given address. If the specified pipe is not available,
-// it will wait indefinitely for the pipe to become available.
+// it will wait indefinitely for the pipe to become available. If no instances of the named pipe
+// have been created yet, it will return immediately with syscall.ERROR_FILE_NOT_FOUND
 //
 // The address must be of the form \\.\\pipe\<name> for local pipes and \\<computer>\pipe\<name>
 // for remote pipes.
@@ -116,15 +130,33 @@ func (e PipeError) Error() string {
 //   // remote pipe
 //   conn, err := Dial(`\\othercomp\pipe\mypipename`)
 func Dial(address string) (*PipeConn, error) {
+	return dial(address, nmpwait_wait_forever)
+}
+
+/*  Not currently functioning correctly.
+	waitNamedPipe won't actually wait if no instances of the pipe have been created,
+	so we have to write a timeout ourselves
+
+// DialTimeout acts like Dial, but will time out after the duration of timeout
+func DialTimeout(address string, timeout time.Duration) (*PipeConn, error) {
+	return dial(address, uint32(timeout/time.Millisecond))
+}
+*/
+
+// dial is a helper to initiate a connection to a named pipe that has been started by a server
+func dial(address string, timeout uint32) (*PipeConn, error) {
 	name, err := syscall.UTF16PtrFromString(string(address))
 	if err != nil {
 		return nil, err
 	}
 	for {
 		// this will fail on badly formatted pipe names
-		if err := wait(name, nmpwait_wait_forever); err != nil {
+		if err := waitNamedPipe(name, timeout); err != nil {
 			if err == error_bad_pathname {
-				return nil, PipeError{address}
+				return nil, badAddr(address)
+			}
+			if err == error_sem_timeout {
+				return nil, PipeError{fmt.Sprintf("Waiting for pipe '%s' timed out", address), true}
 			}
 			return nil, err
 		}
@@ -149,7 +181,7 @@ func Dial(address string) (*PipeConn, error) {
 func Listen(address string) (*PipeListener, error) {
 	handle, err := createPipe(address)
 	if err == error_invalid_name {
-		return nil, PipeError{address}
+		return nil, badAddr(address)
 	}
 	if err != nil {
 		return nil, err
@@ -196,7 +228,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 		l.handle = 0
 	}
 
-	if err := connect(handle, nil); err != nil && err != error_pipe_connected {
+	if err := connectNamedPipe(handle, nil); err != nil && err != error_pipe_connected {
 		return nil, err
 	}
 	f := os.NewFile(uintptr(handle), l.addr.String())
@@ -211,7 +243,7 @@ func (l *PipeListener) Close() error {
 	}
 	l.closed = true
 	if l.handle != 0 {
-		err := disconnect(l.handle)
+		err := disconnectNamedPipe(l.handle)
 		l.handle = 0
 		return err
 	}
@@ -227,18 +259,67 @@ type PipeConn struct {
 	addr PipeAddr
 
 	// these aren't actually used yet
-	readDeadline  time.Time
-	writeDeadline time.Time
+	readDeadline  *time.Time
+	writeDeadline *time.Time
+}
+
+type iodata struct {
+	n   int
+	err error
 }
 
 // Read implements the net.Conn Read method.
 func (c *PipeConn) Read(b []byte) (int, error) {
+	if c.readDeadline != nil && time.Now().Before(*c.readDeadline) {
+		ret := make(chan iodata)
+		quit := make(chan bool, 1)
+		go c.read(b, ret, quit)
+		select {
+		case d := <-ret:
+			return d.n, d.err
+		case <-time.After(c.readDeadline.Sub(time.Now())):
+			quit <- true
+			syscall.CancelIoEx(syscall.Handle(c.file.Fd()), nil)
+			return 0, timeout(c.addr.String())
+		}
+	}
 	return c.file.Read(b)
+}
+
+// read is a helper function to support read timeouts
+func (c *PipeConn) read(b []byte, ret chan iodata, quit chan bool) {
+	n, err := c.file.Read(b)
+	select {
+	case ret <- iodata{n, err}:
+	case <-quit:
+	}
 }
 
 // Write implements the net.Conn Write method.
 func (c *PipeConn) Write(b []byte) (int, error) {
+	if c.writeDeadline != nil && time.Now().Before(*c.writeDeadline) {
+		ret := make(chan iodata)
+		quit := make(chan bool, 1)
+		go c.write(b, ret, quit)
+		select {
+		case d := <-ret:
+			return d.n, d.err
+		case <-time.After(c.writeDeadline.Sub(time.Now())):
+			quit <- true
+			syscall.CancelIoEx(syscall.Handle(c.file.Fd()), nil)
+			return 0, timeout(c.addr.String())
+		}
+	}
 	return c.file.Write(b)
+}
+
+// write is a helper function to support write timeouts
+func (c *PipeConn) write(b []byte, ret chan iodata, quit chan bool) {
+	n, err := c.file.Write(b)
+	select {
+	case ret <- iodata{n, err}:
+	case <-quit:
+	}
 }
 
 // Close closes the connection.
@@ -258,6 +339,7 @@ func (c *PipeConn) RemoteAddr() net.Addr {
 }
 
 // SetDeadline implements the net.Conn SetDeadline method.
+// Note that timeouts are only supported on Windows Vista/Server 2008 and above
 func (c *PipeConn) SetDeadline(t time.Time) error {
 	c.SetReadDeadline(t)
 	c.SetWriteDeadline(t)
@@ -265,14 +347,16 @@ func (c *PipeConn) SetDeadline(t time.Time) error {
 }
 
 // SetReadDeadline implements the net.Conn SetReadDeadline method.
+// Note that timeouts are only supported on Windows Vista/Server 2008 and above
 func (c *PipeConn) SetReadDeadline(t time.Time) error {
-	c.readDeadline = t
+	c.readDeadline = &t
 	return nil
 }
 
 // SetWriteDeadline implements the net.Conn SetWriteDeadline method.
+// Note that timeouts are only supported on Windows Vista/Server 2008 and above
 func (c *PipeConn) SetWriteDeadline(t time.Time) error {
-	c.writeDeadline = t
+	c.writeDeadline = &t
 	return nil
 }
 
@@ -295,5 +379,12 @@ func createPipe(address string) (syscall.Handle, error) {
 		return 0, err
 	}
 
-	return create(n, pipe_access_duplex, pipe_type_byte, pipe_unlimited_instances, 512, 512, 0, nil)
+	return createNamedPipe(n, pipe_access_duplex, pipe_type_byte, pipe_unlimited_instances, 512, 512, 0, nil)
+}
+
+func badAddr(addr string) PipeError {
+	return PipeError{fmt.Sprintf("Invalid pipe address '%s'.", addr), false}
+}
+func timeout(addr string) PipeError {
+	return PipeError{fmt.Sprintf("Pipe IO timed out waiting for '%s'", addr), true}
 }

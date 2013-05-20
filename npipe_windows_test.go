@@ -3,8 +3,11 @@ package npipe
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -65,10 +68,143 @@ func TestBadListen(t *testing.T) {
 	}
 }
 
+// Test that PipeConn's read deadline works correctly
+func TestReadDeadline(t *testing.T) {
+	address := `\\.\pipe\TestReadDeadline`
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatal("Error starting to listen on pipe: ", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		c, err := Dial(address)
+		defer c.Close()
+		if err != nil {
+			t.Fatal("Error dialing into pipe: ", err)
+		}
+
+		c.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
+		msg, err := bufio.NewReader(c).ReadString('\n')
+		if msg != "" {
+			t.Error("Pipe read timeout returned a non-empty message: ", msg)
+		}
+		if err == nil {
+			t.Error("Pipe read timeout returned nil error")
+		} else {
+			pe, ok := err.(PipeError)
+			if !ok {
+				t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
+			}
+			if !pe.Timeout() {
+				t.Error("Pipe read timeout didn't return an error indicating the timeout")
+			}
+		}
+		wg.Done()
+	}()
+
+	conn, err := ln.Accept()
+	defer conn.Close()
+	if err != nil {
+		t.Fatal("Error accepting connection: ", err)
+	}
+	// don't write anything, so the reader will time out
+	wg.Wait()
+}
+
+// Test that PipeConn's write deadline works correctly
+func TestWriteDeadline(t *testing.T) {
+	address := `\\.\pipe\TestWriteDeadline`
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatal("Error starting to listen on pipe: ", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		c, err := Dial(address)
+		defer c.Close()
+		if err != nil {
+			t.Fatal("Error dialing into pipe: ", err)
+		}
+
+		c.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
+
+		// windows pipes have a buffer, so even if we don't read from the pipe,
+		// the write may succeed anyway, so we have to write a whole bunch to
+		// test the time out
+
+		f, err := os.Open("npipe_windows_test.go")
+		if err != nil {
+			t.Fatal("Unexpected error opening test file: ", err)
+		}
+		defer f.Close()
+
+		_, err = io.Copy(c, f)
+
+		if err == nil {
+			t.Error("Pipe write timeout returned nil error")
+		} else {
+			pe, ok := err.(PipeError)
+			if !ok {
+				t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
+			}
+			if !pe.Timeout() {
+				t.Error("Pipe write timeout didn't return an error indicating the timeout")
+			}
+		}
+		wg.Done()
+	}()
+
+	conn, err := ln.Accept()
+	defer conn.Close()
+	if err != nil {
+		t.Fatal("Error accepting connection: ", err)
+	}
+	// don't read anything, so the writer will time out
+	wg.Wait()
+}
+
+/* See DialTimeout
+
+// TestDialTimeout tests that the DialTimeout function will actually timeout correctly
+func TestDialTimeout(t *testing.T) {
+	c, err := DialTimeout(`\\.\pipe\TestDialTimeout`, time.Millisecond*50)
+	if c != nil {
+		t.Error("DialTimeout returned non-nil connection: ", c)
+	}
+	if err == nil {
+		t.Error("DialTimeout returned nil error")
+	} else {
+		pe, ok := err.(PipeError)
+		if !ok {
+			t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
+		}
+		if !pe.Timeout() {
+			t.Error("Dial timeout didn't return an error indicating the timeout")
+		}
+	}
+}
+*/
+
+// TestDialNotFound tests that the Dial function returns the correct error if you dial
+// try to connect to a pipe that hasn't been created yet
+func TestDialNotFound(t *testing.T) {
+	c, err := Dial(`\\.\pipe\TestDialNotFound`)
+	if c != nil {
+		t.Error("Dial returned non-nil connection: ", c)
+	}
+	if err != syscall.ERROR_FILE_NOT_FOUND {
+		t.Error("Dial returned wrong error, expected syscall.ERROR_FILE_NOT_FOUND, got: ", err)
+	}
+}
+
 // TestCommonUseCase is a full run-through of the most common use case, where you create a listener
 // and then dial into it with several clients in succession
 func TestCommonUseCase(t *testing.T) {
-	address := `\\.\pipe\mypipe`
+	address := `\\.\pipe\TestCommonUseCase`
 	convos := 5
 	clients := 10
 
@@ -144,7 +280,7 @@ func handleConnection(conn net.Conn, convos int, t *testing.T) {
 // channel
 func startClient(address string, done chan bool, convos int, t *testing.T) {
 	c := make(chan *PipeConn)
-	go dial(address, c, t)
+	go asyncdial(address, c, t)
 
 	var conn *PipeConn
 	select {
@@ -173,9 +309,9 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 	done <- true
 }
 
-// dial is a helper that dials and returns the connection on the given channel.
+// asyncdial is a helper that dials and returns the connection on the given channel.
 // this is useful for being able to give dial a timeout
-func dial(address string, c chan *PipeConn, t *testing.T) {
+func asyncdial(address string, c chan *PipeConn, t *testing.T) {
 	conn, err := Dial(address)
 	if err != nil {
 		t.Fatal("Error from dial: ", err)
