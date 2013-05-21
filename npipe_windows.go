@@ -115,8 +115,7 @@ func (e PipeError) Temporary() bool {
 }
 
 // Dial connects to a named pipe with the given address. If the specified pipe is not available,
-// it will wait indefinitely for the pipe to become available. If no instances of the named pipe
-// have been created yet, it will return immediately with syscall.ERROR_FILE_NOT_FOUND
+// it will wait indefinitely for the pipe to become available.
 //
 // The address must be of the form \\.\\pipe\<name> for local pipes and \\<computer>\pipe\<name>
 // for remote pipes.
@@ -130,48 +129,91 @@ func (e PipeError) Temporary() bool {
 //   // remote pipe
 //   conn, err := Dial(`\\othercomp\pipe\mypipename`)
 func Dial(address string) (*PipeConn, error) {
-	return dial(address, nmpwait_wait_forever)
+	for {
+		conn, err := dial(address, nmpwait_wait_forever)
+		if err == nil {
+			return conn, nil
+		}
+		if isPipeNotReady(err) {
+			<-time.After(100 * time.Millisecond)
+			continue
+		}
+		return nil, err
+	}
 }
-
-/*  Not currently functioning correctly.
-	waitNamedPipe won't actually wait if no instances of the pipe have been created,
-	so we have to write a timeout ourselves
 
 // DialTimeout acts like Dial, but will time out after the duration of timeout
 func DialTimeout(address string, timeout time.Duration) (*PipeConn, error) {
-	return dial(address, uint32(timeout/time.Millisecond))
-}
-*/
+	deadline := time.Now().Add(timeout)
 
-// dial is a helper to initiate a connection to a named pipe that has been started by a server
+	now := time.Now()
+	for now.Before(deadline) {
+		millis := uint32(deadline.Sub(now) / time.Millisecond)
+		conn, err := dial(address, millis)
+		if err == nil {
+			return conn, nil
+		}
+		if err == error_sem_timeout {
+			// This is WaitNamedPipe's timeout error, so we know we're done
+			return nil, PipeError{fmt.Sprintf(
+				"Timed out waiting for pipe '%s' to come available", address), true}
+		}
+		if isPipeNotReady(err) {
+			left := deadline.Sub(time.Now())
+			retry := 100 * time.Millisecond
+			if left > retry {
+				<-time.After(retry)
+			} else {
+				<-time.After(left - time.Millisecond)
+			}
+			now = time.Now()
+			continue
+		}
+		return nil, err
+	}
+	return nil, PipeError{fmt.Sprintf(
+		"Timed out waiting for pipe '%s' to come available", address), true}
+}
+
+// isPipeNotReady checks the error to see if it indicates the pipe is not ready
+func isPipeNotReady(err error) bool {
+	// Pipe Busy means another client just grabbed the open pipe end,
+	// and the server hasn't made a new one yet.
+	// File Not Found means the server hasn't created the pipe yet.
+	// Neither is a fatal error.
+
+	if err, ok := err.(*os.PathError); ok {
+		return err.Err == error_pipe_busy
+	}
+	return err == syscall.ERROR_FILE_NOT_FOUND
+}
+
+// dial is a helper to initiate a connection to a named pipe that has been started by a server.
+// The timeout is only enforced if the pipe server has already created the pipe, otherwise
+// this function will return immediately.
 func dial(address string, timeout uint32) (*PipeConn, error) {
 	name, err := syscall.UTF16PtrFromString(string(address))
 	if err != nil {
 		return nil, err
 	}
-	for {
-		// this will fail on badly formatted pipe names
-		if err := waitNamedPipe(name, timeout); err != nil {
-			if err == error_bad_pathname {
-				return nil, badAddr(address)
-			}
-			if err == error_sem_timeout {
-				return nil, PipeError{fmt.Sprintf("Waiting for pipe '%s' timed out", address), true}
-			}
-			return nil, err
+	// If at least one instance of the pipe has been created, this function
+	// will wait timeout milliseconds for it to become available.
+	// It will return immediately regardless of timeout, if no instances
+	// of the named pipe have been created yet.
+	// If this returns with no error, there is a pipe available.
+	if err := waitNamedPipe(name, timeout); err != nil {
+		if err == error_bad_pathname {
+			// badly formatted pipe name
+			return nil, badAddr(address)
 		}
-		f, err := os.OpenFile(address, os.O_RDWR, os.ModePerm|os.ModeNamedPipe)
-
-		if err == nil {
-			return &PipeConn{file: f, addr: PipeAddr(address)}, nil
-		}
-
-		// pipe busy means another client just grabbed the open pipe end, and the server hasn't made
-		// a new one yet.
-		if err.(*os.PathError).Err != error_pipe_busy {
-			return nil, err
-		}
+		return nil, err
 	}
+
+	f, err := os.OpenFile(address, os.O_RDWR, os.ModePerm|os.ModeNamedPipe)
+	if err != nil {
+		return nil, err
+	}
+	return &PipeConn{file: f, addr: PipeAddr(address)}, nil
 }
 
 // New returns a new PipeListener that will listen on a pipe with the given address.
@@ -379,7 +421,11 @@ func createPipe(address string) (syscall.Handle, error) {
 		return 0, err
 	}
 
-	return createNamedPipe(n, pipe_access_duplex, pipe_type_byte, pipe_unlimited_instances, 512, 512, 0, nil)
+	return createNamedPipe(n,
+		pipe_access_duplex,
+		pipe_type_byte,
+		pipe_unlimited_instances,
+		512, 512, 0, nil)
 }
 
 func badAddr(addr string) PipeError {

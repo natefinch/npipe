@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -19,20 +18,21 @@ const (
 	fn = `C:\62DA0493-99A1-4327-B5A8-6C4E4466C3FC.txt`
 )
 
-// TestBadDial tests that if you dial something other than a valid pipe path, that you get back a PipeError
-// and that you don't accidently create a file on disk (since dial uses OpenFile)
+// TestBadDial tests that if you dial something other than a valid pipe path, that you get back a
+// PipeError and that you don't accidently create a file on disk (since dial uses OpenFile)
 func TestBadDial(t *testing.T) {
 	ns := []string{fn, "http://www.google.com", "somethingbadhere"}
 	for _, n := range ns {
 		c, err := Dial(n)
 		if _, ok := err.(PipeError); !ok {
-			t.Errorf("Dialing invalid pipe address '%s' did not result in correct error! Expected PipeError, got '%v'", n, err)
+			t.Errorf("Dialing '%s' did not result in correct error! Expected PipeError, got '%v'",
+				n, err)
 		}
 		if c != nil {
-			t.Errorf("Dialing invalid pipe address '%s' returned non-nil connection", n)
+			t.Errorf("Dialing '%s' returned non-nil connection", n)
 		}
 		if b, _ := exists(n); b {
-			t.Errorf("Dialing invalid pipe address '%s' incorrectly created file on disk", n)
+			t.Errorf("Dialing '%s' incorrectly created file on disk", n)
 		}
 	}
 }
@@ -49,10 +49,10 @@ func TestDialExistingFile(t *testing.T) {
 	}
 	c, err := Dial(fn)
 	if _, ok := err.(PipeError); !ok {
-		t.Errorf("Dialing invalid pipe address '%s' did not result in error! Expected PipeError, got '%v'", fn, err)
+		t.Errorf("Dialing '%s' did not result in error! Expected PipeError, got '%v'", fn, err)
 	}
 	if c != nil {
-		t.Errorf("Dialing invalid pipe address '%s' returned non-nil connection", fn)
+		t.Errorf("Dialing '%s' returned non-nil connection", fn)
 	}
 }
 
@@ -61,122 +61,142 @@ func TestBadListen(t *testing.T) {
 	addr := "not a valid pipe address"
 	ln, err := Listen(addr)
 	if _, ok := err.(PipeError); !ok {
-		t.Errorf("Listening on invalid pipe address '%s' did not result in correct error! Expected PipeError, got '%v'", addr, err)
+		t.Errorf("Listening on '%s' did not result in correct error! Expected PipeError, got '%v'",
+			addr, err)
 	}
 	if ln != nil {
-		t.Error("Listening on a bad address '%s' returned non-nil listener.", addr)
+		t.Error("Listening on '%s' returned non-nil listener.", addr)
 	}
 }
 
 // Test that PipeConn's read deadline works correctly
 func TestReadDeadline(t *testing.T) {
 	address := `\\.\pipe\TestReadDeadline`
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go listenAndWait(address, wg, t)
+	defer wg.Done()
+
+	c, err := Dial(address)
+	if err != nil {
+		t.Fatal("Error dialing into pipe: ", err)
+	}
+	if c == nil {
+		t.Fatal("Unexpected nil connection from Dial")
+	}
+	defer c.Close()
+	deadline := time.Now().Add(time.Millisecond * 50)
+	c.SetReadDeadline(deadline)
+	msg, err := bufio.NewReader(c).ReadString('\n')
+	end := time.Now()
+	if msg != "" {
+		t.Error("Pipe read timeout returned a non-empty message: ", msg)
+	}
+	if err == nil {
+		t.Error("Pipe read timeout returned nil error")
+	} else {
+		pe, ok := err.(PipeError)
+		if !ok {
+			t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
+		}
+		if !pe.Timeout() {
+			t.Error("Pipe read timeout didn't return an error indicating the timeout")
+		}
+	}
+	if end.Before(deadline) {
+		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
+	}
+	if end.Sub(deadline) > time.Millisecond {
+		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'",
+			deadline, end)
+	}
+}
+
+// listenAndWait simply sets up a pipe listener that does nothing and closes after the waitgroup
+// is done.
+func listenAndWait(address string, wg sync.WaitGroup, t *testing.T) {
 	ln, err := Listen(address)
 	if err != nil {
 		t.Fatal("Error starting to listen on pipe: ", err)
 	}
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		c, err := Dial(address)
-		defer c.Close()
-		if err != nil {
-			t.Fatal("Error dialing into pipe: ", err)
-		}
-
-		c.SetReadDeadline(time.Now().Add(time.Millisecond * 50))
-		msg, err := bufio.NewReader(c).ReadString('\n')
-		if msg != "" {
-			t.Error("Pipe read timeout returned a non-empty message: ", msg)
-		}
-		if err == nil {
-			t.Error("Pipe read timeout returned nil error")
-		} else {
-			pe, ok := err.(PipeError)
-			if !ok {
-				t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
-			}
-			if !pe.Timeout() {
-				t.Error("Pipe read timeout didn't return an error indicating the timeout")
-			}
-		}
-		wg.Done()
-	}()
-
+	if ln == nil {
+		t.Fatal("Got unexpected nil listener")
+	}
 	conn, err := ln.Accept()
-	defer conn.Close()
 	if err != nil {
 		t.Fatal("Error accepting connection: ", err)
 	}
-	// don't write anything, so the reader will time out
+	if conn == nil {
+		t.Fatal("Got unexpected nil connection")
+	}
+	defer conn.Close()
+	// don't read or write anything
 	wg.Wait()
 }
 
-// Test that PipeConn's write deadline works correctly
+// TestWriteDeadline tests that PipeConn's write deadline works correctly
 func TestWriteDeadline(t *testing.T) {
 	address := `\\.\pipe\TestWriteDeadline`
-	ln, err := Listen(address)
-	if err != nil {
-		t.Fatal("Error starting to listen on pipe: ", err)
-	}
-
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() {
-		c, err := Dial(address)
-		defer c.Close()
-		if err != nil {
-			t.Fatal("Error dialing into pipe: ", err)
-		}
 
-		c.SetWriteDeadline(time.Now().Add(time.Millisecond * 50))
-
-		// windows pipes have a buffer, so even if we don't read from the pipe,
-		// the write may succeed anyway, so we have to write a whole bunch to
-		// test the time out
-
-		f, err := os.Open("npipe_windows_test.go")
-		if err != nil {
-			t.Fatal("Unexpected error opening test file: ", err)
-		}
-		defer f.Close()
-
-		_, err = io.Copy(c, f)
-
-		if err == nil {
-			t.Error("Pipe write timeout returned nil error")
-		} else {
-			pe, ok := err.(PipeError)
-			if !ok {
-				t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
-			}
-			if !pe.Timeout() {
-				t.Error("Pipe write timeout didn't return an error indicating the timeout")
-			}
-		}
-		wg.Done()
-	}()
-
-	conn, err := ln.Accept()
-	defer conn.Close()
+	go listenAndWait(address, wg, t)
+	defer wg.Done()
+	c, err := Dial(address)
 	if err != nil {
-		t.Fatal("Error accepting connection: ", err)
+		t.Fatal("Error dialing into pipe: ", err)
 	}
-	// don't read anything, so the writer will time out
-	wg.Wait()
-}
+	if c == nil {
+		t.Fatal("Unexpected nil connection from Dial")
+	}
 
-/* See DialTimeout
+	// windows pipes have a buffer, so even if we don't read from the pipe,
+	// the write may succeed anyway, so we have to write a whole bunch to
+	// test the time out
+
+	f, err := os.Open("npipe_windows_test.go")
+	if err != nil {
+		t.Fatal("Unexpected error opening test file: ", err)
+	}
+	defer f.Close()
+
+	deadline := time.Now().Add(time.Millisecond * 50)
+	c.SetWriteDeadline(deadline)
+	_, err = io.Copy(c, f)
+	end := time.Now()
+
+	if err == nil {
+		t.Error("Pipe write timeout returned nil error")
+	} else {
+		pe, ok := err.(PipeError)
+		if !ok {
+			t.Errorf("Got wrong error returned, expected PipeError, got '%t'", err)
+		}
+		if !pe.Timeout() {
+			t.Error("Pipe write timeout didn't return an error indicating the timeout")
+		}
+	}
+	if end.Before(deadline) {
+		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
+	}
+	if end.Sub(deadline) > time.Millisecond {
+		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'",
+			deadline, end)
+	}
+}
 
 // TestDialTimeout tests that the DialTimeout function will actually timeout correctly
 func TestDialTimeout(t *testing.T) {
-	c, err := DialTimeout(`\\.\pipe\TestDialTimeout`, time.Millisecond*50)
+	timeout := time.Millisecond * 150
+	deadline := time.Now().Add(timeout)
+	c, err := DialTimeout(`\\.\pipe\TestDialTimeout`, timeout)
+	end := time.Now()
 	if c != nil {
 		t.Error("DialTimeout returned non-nil connection: ", c)
 	}
 	if err == nil {
-		t.Error("DialTimeout returned nil error")
+		t.Error("DialTimeout returned nil error after timeout")
 	} else {
 		pe, ok := err.(PipeError)
 		if !ok {
@@ -186,18 +206,82 @@ func TestDialTimeout(t *testing.T) {
 			t.Error("Dial timeout didn't return an error indicating the timeout")
 		}
 	}
-}
-*/
-
-// TestDialNotFound tests that the Dial function returns the correct error if you dial
-// try to connect to a pipe that hasn't been created yet
-func TestDialNotFound(t *testing.T) {
-	c, err := Dial(`\\.\pipe\TestDialNotFound`)
-	if c != nil {
-		t.Error("Dial returned non-nil connection: ", c)
+	if end.Before(deadline) {
+		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
 	}
-	if err != syscall.ERROR_FILE_NOT_FOUND {
-		t.Error("Dial returned wrong error, expected syscall.ERROR_FILE_NOT_FOUND, got: ", err)
+	if end.Sub(deadline) > time.Millisecond {
+		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'", deadline, end)
+	}
+}
+
+// TestDialNoTimeout tests that the DialTimeout function will properly wait for the pipe and
+// connect when it is available
+func TestDialNoTimeout(t *testing.T) {
+	timeout := time.Millisecond * 150
+	address := `\\.\pipe\TestDialNoTimeout`
+	go func() {
+		<-time.After(50 * time.Millisecond)
+		listenAndClose(address, t)
+	}()
+
+	deadline := time.Now().Add(timeout)
+	c, err := DialTimeout(address, timeout)
+	end := time.Now()
+
+	if c == nil {
+		t.Error("DialTimeout returned unexpected nil connection")
+	}
+	if err != nil {
+		t.Error("DialTimeout returned unexpected non-nil error: ", err)
+	}
+	if end.After(deadline) {
+		t.Fatalf("Ended after deadline '%s', ended at '%s'", deadline, end)
+	}
+}
+
+// TestDial tests that you can dial before a pipe is available,
+// and that it'll pick up the pipe once it's ready
+func TestDial(t *testing.T) {
+	address := `\\.\pipe\TestDial`
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		wg.Done()
+		conn, err := Dial(address)
+		if err != nil {
+			t.Fatal("Got unexpected error from Dial: ", err)
+		}
+		if conn == nil {
+			t.Fatal("Got unexpected nil connection from Dial")
+		}
+		if err := conn.Close(); err != nil {
+			t.Fatal("Got unexpected error from conection.Close(): ", err)
+		}
+	}()
+
+	wg.Wait()
+	<-time.After(50 * time.Millisecond)
+	listenAndClose(address, t)
+}
+
+// listenAndClose is a helper method to just listen on a pipe and close as soon as someone connects.
+func listenAndClose(address string, t *testing.T) {
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatal("Got unexpected error from Listen: ", err)
+	}
+	if ln == nil {
+		t.Fatal("Got unexpected nil listener from Listen")
+	}
+	conn, err := ln.Accept()
+	if err != nil {
+		t.Fatal("Got unexpected error from Accept: ", err)
+	}
+	if conn == nil {
+		t.Fatal("Got unexpected nil connection from Accept")
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal("Got unexpected error from conection.Close(): ", err)
 	}
 }
 
