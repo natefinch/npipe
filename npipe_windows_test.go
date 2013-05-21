@@ -58,14 +58,16 @@ func TestDialExistingFile(t *testing.T) {
 
 // TestBadListen tests that if you listen on a bad address, that we get back a PipeError
 func TestBadListen(t *testing.T) {
-	addr := "not a valid pipe address"
-	ln, err := Listen(addr)
-	if _, ok := err.(PipeError); !ok {
-		t.Errorf("Listening on '%s' did not result in correct error! Expected PipeError, got '%v'",
-			addr, err)
-	}
-	if ln != nil {
-		t.Error("Listening on '%s' returned non-nil listener.", addr)
+	addrs := []string{"not a valid pipe address", `\\127.0.0.1\pipe\TestBadListen`}
+	for _, address := range addrs {
+		ln, err := Listen(address)
+		if _, ok := err.(PipeError); !ok {
+			t.Errorf("Listening on '%s' did not result in correct error! Expected PipeError, got '%v'",
+				address, err)
+		}
+		if ln != nil {
+			t.Error("Listening on '%s' returned non-nil listener.", address)
+		}
 	}
 }
 
@@ -288,30 +290,33 @@ func listenAndClose(address string, t *testing.T) {
 // TestCommonUseCase is a full run-through of the most common use case, where you create a listener
 // and then dial into it with several clients in succession
 func TestCommonUseCase(t *testing.T) {
-	address := `\\.\pipe\TestCommonUseCase`
-	convos := 5
-	clients := 10
+	addrs := []string{`\\.\pipe\TestCommonUseCase`, `\\127.0.0.1\pipe\TestCommonUseCase`}
+	for _, address := range addrs {
+		convos := 5
+		clients := 10
 
-	done := make(chan bool)
-	quit := make(chan bool)
+		done := make(chan bool)
+		quit := make(chan bool)
 
-	go aggregateDones(done, quit, clients)
+		go aggregateDones(done, quit, clients)
 
-	ln, err := Listen(address)
-	if err != nil {
-		t.Fatal("Error starting to listen on pipe: ", err)
-	}
+		// always listen on the . version, since IP won't work for listening
+		ln, err := Listen(addrs[0])
+		if err != nil {
+			t.Fatal("Error starting to listen on pipe: ", err)
+		}
 
-	for x := 0; x < clients; x++ {
-		go startClient(address, done, convos, t)
-	}
+		for x := 0; x < clients; x++ {
+			go startClient(address, done, convos, t)
+		}
 
-	go startServer(ln, convos, t)
+		go startServer(ln, convos, t)
 
-	select {
-	case <-quit:
-	case <-time.After(time.Second):
-		t.Fatal("Failed to receive quit message after a reasonable timeout")
+		select {
+		case <-quit:
+		case <-time.After(time.Second):
+			t.Fatal("Failed to receive quit message after a reasonable timeout")
+		}
 	}
 }
 
