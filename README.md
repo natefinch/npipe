@@ -2,8 +2,9 @@ npipe
 =====
 A Windows named pipe implementation written in pure Go.
 
-See documentation at http://godoc.org/github.com/natefinch/npipe
-See Windows Pipe documentation at http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
+Documentation at http://godoc.org/github.com/natefinch/npipe
+
+Windows Pipe documentation at http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
 
 Written for Go 1.1.
 
