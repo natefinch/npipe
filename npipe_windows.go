@@ -1,3 +1,5 @@
+// +build windows
+
 // Copyright 2013 Nate Finch. All rights reserved.
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
@@ -38,9 +40,12 @@ package npipe
 //sys connectNamedPipe(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = ConnectNamedPipe
 //sys disconnectNamedPipe(handle syscall.Handle) (err error) = DisconnectNamedPipe
 //sys waitNamedPipe(name *uint16, timeout uint32) (err error) = WaitNamedPipeW
+//sys createEvent(sa *syscall.SecurityAttributes, manualReset bool, initialState bool, name *uint16) (handle syscall.Handle, err error) [failretval==syscall.InvalidHandle] = CreateEventW
+//sys getOverlappedResult(handle syscall.Handle, overlapped *syscall.Overlapped, transferred *uint32, wait bool) (err error) = GetOverlappedResult
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"syscall"
@@ -91,6 +96,8 @@ const (
 
 	error_bad_pathname syscall.Errno = 0xA1
 	error_invalid_name syscall.Errno = 0x7B
+
+	error_io_incomplete syscall.Errno = 0x3e4
 )
 
 // PipeError is an error related to a call to a pipe
@@ -188,6 +195,32 @@ func isPipeNotReady(err error) bool {
 	return err == syscall.ERROR_FILE_NOT_FOUND
 }
 
+// newOverlapped creates a structure used to track asynchronous
+// I/O requests that have been issued.
+func newOverlapped() (overlapped *syscall.Overlapped, err error) {
+	var event syscall.Handle
+	event, err = createEvent(nil, true, true, nil)
+	if err == nil {
+		overlapped = &syscall.Overlapped{
+			HEvent: event,
+		}
+	}
+	return
+}
+
+// waitForCompletion waits for an asynchronous I/O request referred to by overlapped to complete.
+// This function returns the number of bytes transferred by the operation and an error code if
+// applicable (nil otherwise).
+func waitForCompletion(handle syscall.Handle, overlapped *syscall.Overlapped) (uint32, error) {
+	_, err := syscall.WaitForSingleObject(overlapped.HEvent, syscall.INFINITE)
+	if err != nil {
+		return 0, err
+	}
+	var transferred uint32
+	err = getOverlappedResult(handle, overlapped, &transferred, true)
+	return transferred, err
+}
+
 // dial is a helper to initiate a connection to a named pipe that has been started by a server.
 // The timeout is only enforced if the pipe server has already created the pipe, otherwise
 // this function will return immediately.
@@ -208,12 +241,17 @@ func dial(address string, timeout uint32) (*PipeConn, error) {
 		}
 		return nil, err
 	}
-
-	f, err := os.OpenFile(address, os.O_RDWR, os.ModePerm|os.ModeNamedPipe)
+	pathp, err := syscall.UTF16PtrFromString(address)
 	if err != nil {
 		return nil, err
 	}
-	return &PipeConn{file: f, addr: PipeAddr(address)}, nil
+	handle, err := syscall.CreateFile(pathp, syscall.GENERIC_READ|syscall.GENERIC_WRITE,
+		uint32(syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE), nil, syscall.OPEN_EXISTING,
+		syscall.FILE_FLAG_OVERLAPPED, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &PipeConn{handle: handle, addr: PipeAddr(address)}, nil
 }
 
 // New returns a new PipeListener that will listen on a pipe with the given address.
@@ -270,11 +308,19 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 		l.handle = 0
 	}
 
-	if err := connectNamedPipe(handle, nil); err != nil && err != error_pipe_connected {
+	overlapped, err := newOverlapped()
+	if err != nil {
 		return nil, err
 	}
-	f := os.NewFile(uintptr(handle), l.addr.String())
-	return &PipeConn{file: f, addr: l.addr}, nil
+	if err := connectNamedPipe(handle, overlapped); err != nil && err != error_pipe_connected {
+		if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
+			_, err = waitForCompletion(handle, overlapped)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &PipeConn{handle: handle, addr: l.addr}, nil
 }
 
 // Close stops listening on the address.
@@ -297,8 +343,8 @@ func (l *PipeListener) Addr() net.Addr { return l.addr }
 
 // PipeConn is the implementation of the net.Conn interface for named pipe connections.
 type PipeConn struct {
-	file *os.File
-	addr PipeAddr
+	handle syscall.Handle
+	addr   PipeAddr
 
 	// these aren't actually used yet
 	readDeadline  *time.Time
@@ -310,63 +356,77 @@ type iodata struct {
 	err error
 }
 
-// Read implements the net.Conn Read method.
-func (c *PipeConn) Read(b []byte) (int, error) {
-	if c.readDeadline != nil && time.Now().Before(*c.readDeadline) {
-		ret := make(chan iodata)
-		quit := make(chan bool, 1)
-		go c.read(b, ret, quit)
-		select {
-		case d := <-ret:
-			return d.n, d.err
-		case <-time.After(c.readDeadline.Sub(time.Now())):
-			quit <- true
-			syscall.CancelIoEx(syscall.Handle(c.file.Fd()), nil)
-			return 0, timeout(c.addr.String())
-		}
+// completeRequest waits for a pending request to either complete or to abort due
+// to hitting the specified deadline. Deadline may be set to nil to wait forever.
+func (c *PipeConn) completeRequest(deadline *time.Time, overlapped *syscall.Overlapped) (done uint32, err error) {
+	var timeCh <-chan time.Time
+	if deadline != nil && time.Now().Before(*deadline) {
+		timeCh = time.After(deadline.Sub(time.Now()))
 	}
-	return c.file.Read(b)
+	completeCh := make(chan iodata)
+	go func() {
+		done, err := waitForCompletion(c.handle, overlapped)
+		completeCh <- iodata{int(done), err}
+	}()
+	select {
+	case result := <-completeCh:
+		done = uint32(result.n)
+		err = result.err
+	case <-timeCh:
+		syscall.CancelIoEx(c.handle, overlapped)
+		done = 0
+		err = timeout(c.addr.String())
+	}
+	return
 }
 
-// read is a helper function to support read timeouts
-func (c *PipeConn) read(b []byte, ret chan iodata, quit chan bool) {
-	n, err := c.file.Read(b)
-	select {
-	case ret <- iodata{n, err}:
-	case <-quit:
+// Read implements the net.Conn Read method.
+func (c *PipeConn) Read(b []byte) (int, error) {
+	// Use ReadFile() rather than Read() because the latter
+	// contains a workaround that eats ERROR_BROKEN_PIPE.
+	overlapped, err := newOverlapped()
+	if err != nil {
+		return 0, err
 	}
+	var done uint32
+	err = syscall.ReadFile(c.handle, b, &done, overlapped)
+	if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
+		done, err = c.completeRequest(c.readDeadline, overlapped)
+	}
+	// Windows will produce ERROR_BROKEN_PIPE upon closing
+	// a handle on the other end of a connection. Go RPC
+	// expects an io.EOF error in this case.
+	if err == syscall.ERROR_BROKEN_PIPE {
+		err = io.EOF
+	}
+	return int(done), err
 }
 
 // Write implements the net.Conn Write method.
 func (c *PipeConn) Write(b []byte) (int, error) {
-	if c.writeDeadline != nil && time.Now().Before(*c.writeDeadline) {
-		ret := make(chan iodata)
-		quit := make(chan bool, 1)
-		go c.write(b, ret, quit)
-		select {
-		case d := <-ret:
-			return d.n, d.err
-		case <-time.After(c.writeDeadline.Sub(time.Now())):
-			quit <- true
-			syscall.CancelIoEx(syscall.Handle(c.file.Fd()), nil)
-			return 0, timeout(c.addr.String())
-		}
+	// Use WriteFile() rather than Write() because the latter does
+	// not support asynchronous I/O.
+	overlapped, err := newOverlapped()
+	if err != nil {
+		return 0, err
 	}
-	return c.file.Write(b)
-}
-
-// write is a helper function to support write timeouts
-func (c *PipeConn) write(b []byte, ret chan iodata, quit chan bool) {
-	n, err := c.file.Write(b)
-	select {
-	case ret <- iodata{n, err}:
-	case <-quit:
+	var done uint32
+	err = syscall.WriteFile(c.handle, b, &done, overlapped)
+	if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
+		done, err = c.completeRequest(c.writeDeadline, overlapped)
 	}
+	// Windows will produce ERROR_BROKEN_PIPE upon closing
+	// a handle on the other end of a connection. Go RPC
+	// expects an io.EOF error in this case.
+	if err == syscall.ERROR_BROKEN_PIPE {
+		err = io.EOF
+	}
+	return int(done), err
 }
 
 // Close closes the connection.
 func (c *PipeConn) Close() error {
-	return c.file.Close()
+	return syscall.CloseHandle(c.handle)
 }
 
 // LocalAddr returns the local network address.
@@ -422,7 +482,7 @@ func createPipe(address string) (syscall.Handle, error) {
 	}
 
 	return createNamedPipe(n,
-		pipe_access_duplex,
+		pipe_access_duplex|syscall.FILE_FLAG_OVERLAPPED,
 		pipe_type_byte,
 		pipe_unlimited_instances,
 		512, 512, 0, nil)

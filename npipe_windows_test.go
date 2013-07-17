@@ -1,26 +1,32 @@
+// +build windows
+
 package npipe
 
 import (
 	"bufio"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
+	"net/rpc"
 	"os"
+	"path/filepath"
+
 	"sync"
 	"testing"
 	"time"
 )
 
 const (
-	clientMsg = "Hi server!\n"
-	serverMsg = "Hi there, client!\n"
-
-	fn = `C:\62DA0493-99A1-4327-B5A8-6C4E4466C3FC.txt`
+	clientMsg    = "Hi server!\n"
+	serverMsg    = "Hi there, client!\n"
+	fileTemplate = "62DA0493-99A1-4327-B5A8-6C4E4466C3FC.txt"
 )
 
 // TestBadDial tests that if you dial something other than a valid pipe path, that you get back a
 // PipeError and that you don't accidently create a file on disk (since dial uses OpenFile)
 func TestBadDial(t *testing.T) {
+	fn := filepath.Join("C:\\", fileTemplate)
 	ns := []string{fn, "http://www.google.com", "somethingbadhere"}
 	for _, n := range ns {
 		c, err := Dial(n)
@@ -40,6 +46,8 @@ func TestBadDial(t *testing.T) {
 // TestDialExistingFile tests that if you dial with the name of an existing file,
 // that you don't accidentally open the file (since dial uses OpenFile)
 func TestDialExistingFile(t *testing.T) {
+	tempdir := os.TempDir()
+	fn := filepath.Join(tempdir, fileTemplate)
 	if f, err := os.Create(fn); err != nil {
 		t.Fatalf("Unexpected error creating file '%s': '%v'", fn, err)
 	} else {
@@ -156,16 +164,14 @@ func TestWriteDeadline(t *testing.T) {
 	// windows pipes have a buffer, so even if we don't read from the pipe,
 	// the write may succeed anyway, so we have to write a whole bunch to
 	// test the time out
-
-	f, err := os.Open("npipe_windows_test.go")
-	if err != nil {
-		t.Fatal("Unexpected error opening test file: ", err)
-	}
-	defer f.Close()
-
 	deadline := time.Now().Add(time.Millisecond * 50)
 	c.SetWriteDeadline(deadline)
-	_, err = io.Copy(c, f)
+	buffer := make([]byte, 1<<16)
+	if _, err = io.ReadFull(rand.Reader, buffer); err != nil {
+		t.Fatal("Couldn't generate random buffer: %v", err)
+	}
+	_, err = c.Write(buffer)
+
 	end := time.Now()
 
 	if err == nil {
@@ -264,6 +270,44 @@ func TestDial(t *testing.T) {
 	wg.Wait()
 	<-time.After(50 * time.Millisecond)
 	listenAndClose(address, t)
+}
+
+type RPCService struct{}
+
+func (s *RPCService) GetResponse(request string, response *string) error {
+	*response = request
+	return nil
+}
+
+// TestGoRPC tests that you can run go RPC over the pipe,
+// and that overlapping bi-directional communication is working
+// (write while a blocking read is in progress).
+func TestGoRPC(t *testing.T) {
+	address := `\\.\pipe\TestRPC`
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatal("Error listening on %q: %v", address, err)
+	}
+	defer ln.Close()
+	server := rpc.NewServer()
+	service := &RPCService{}
+	server.Register(service)
+	go server.Accept(ln)
+	var conn *PipeConn
+	conn, err = Dial(address)
+	if err != nil {
+		t.Fatal("Error dialing %q: %v", address, err)
+	}
+	client := rpc.NewClient(conn)
+	defer client.Close()
+	req := "dummy"
+	rep := ""
+	if err = client.Call("RPCService.GetResponse", req, &rep); err != nil {
+		t.Fatal("Error calling RPCService.GetResponse: %v", err)
+	}
+	if req != rep {
+		t.Fatal("Unexpected result (expected: %q, got: %q)", req, rep)
+	}
 }
 
 // listenAndClose is a helper method to just listen on a pipe and close as soon as someone connects.
