@@ -1,5 +1,3 @@
-// +build windows
-
 // Copyright 2013 Nate Finch. All rights reserved.
 // Use of this source code is governed by an MIT-style
 // license that can be found in the LICENSE file.
@@ -197,15 +195,12 @@ func isPipeNotReady(err error) bool {
 
 // newOverlapped creates a structure used to track asynchronous
 // I/O requests that have been issued.
-func newOverlapped() (overlapped *syscall.Overlapped, err error) {
-	var event syscall.Handle
-	event, err = createEvent(nil, true, true, nil)
-	if err == nil {
-		overlapped = &syscall.Overlapped{
-			HEvent: event,
-		}
+func newOverlapped() (*syscall.Overlapped, error) {
+	event, err := createEvent(nil, true, true, nil)
+	if err != nil {
+		return nil, err
 	}
-	return
+	return &syscall.Overlapped{HEvent: event}, nil
 }
 
 // waitForCompletion waits for an asynchronous I/O request referred to by overlapped to complete.
@@ -352,32 +347,40 @@ type PipeConn struct {
 }
 
 type iodata struct {
-	n   int
+	n   uint32
 	err error
 }
 
-// completeRequest waits for a pending request to either complete or to abort due
-// to hitting the specified deadline. Deadline may be set to nil to wait forever.
-func (c *PipeConn) completeRequest(deadline *time.Time, overlapped *syscall.Overlapped) (done uint32, err error) {
-	var timeCh <-chan time.Time
-	if deadline != nil && time.Now().Before(*deadline) {
-		timeCh = time.After(deadline.Sub(time.Now()))
+// completeRequest looks at iodata to see if a request is pending. If so, it waits for it to either complete or to
+// abort due to hitting the specified deadline. Deadline may be set to nil to wait forever. If no request is pending,
+// the content of iodata is returned.
+func (c *PipeConn) completeRequest(data iodata, deadline *time.Time, overlapped *syscall.Overlapped) (int, error) {
+	if data.err == error_io_incomplete || data.err == syscall.ERROR_IO_PENDING {
+		var timer <-chan time.Time
+		if deadline != nil {
+			if timeDiff := deadline.Sub(time.Now()); timeDiff > 0 {
+				timer = time.After(timeDiff)
+			}
+		}
+		done := make(chan iodata)
+		go func() {
+			n, err := waitForCompletion(c.handle, overlapped)
+			done <- iodata{n, err}
+		}()
+		select {
+		case data = <-done:
+		case <-timer:
+			syscall.CancelIoEx(c.handle, overlapped)
+			data = iodata{0, timeout(c.addr.String())}
+		}
 	}
-	completeCh := make(chan iodata)
-	go func() {
-		done, err := waitForCompletion(c.handle, overlapped)
-		completeCh <- iodata{int(done), err}
-	}()
-	select {
-	case result := <-completeCh:
-		done = uint32(result.n)
-		err = result.err
-	case <-timeCh:
-		syscall.CancelIoEx(c.handle, overlapped)
-		done = 0
-		err = timeout(c.addr.String())
+	// Windows will produce ERROR_BROKEN_PIPE upon closing
+	// a handle on the other end of a connection. Go RPC
+	// expects an io.EOF error in this case.
+	if data.err == syscall.ERROR_BROKEN_PIPE {
+		data.err = io.EOF
 	}
-	return
+	return int(data.n), data.err
 }
 
 // Read implements the net.Conn Read method.
@@ -388,40 +391,20 @@ func (c *PipeConn) Read(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var done uint32
-	err = syscall.ReadFile(c.handle, b, &done, overlapped)
-	if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
-		done, err = c.completeRequest(c.readDeadline, overlapped)
-	}
-	// Windows will produce ERROR_BROKEN_PIPE upon closing
-	// a handle on the other end of a connection. Go RPC
-	// expects an io.EOF error in this case.
-	if err == syscall.ERROR_BROKEN_PIPE {
-		err = io.EOF
-	}
-	return int(done), err
+	var n uint32
+	err = syscall.ReadFile(c.handle, b, &n, overlapped)
+	return c.completeRequest(iodata{n, err}, c.readDeadline, overlapped)
 }
 
 // Write implements the net.Conn Write method.
 func (c *PipeConn) Write(b []byte) (int, error) {
-	// Use WriteFile() rather than Write() because the latter does
-	// not support asynchronous I/O.
 	overlapped, err := newOverlapped()
 	if err != nil {
 		return 0, err
 	}
-	var done uint32
-	err = syscall.WriteFile(c.handle, b, &done, overlapped)
-	if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
-		done, err = c.completeRequest(c.writeDeadline, overlapped)
-	}
-	// Windows will produce ERROR_BROKEN_PIPE upon closing
-	// a handle on the other end of a connection. Go RPC
-	// expects an io.EOF error in this case.
-	if err == syscall.ERROR_BROKEN_PIPE {
-		err = io.EOF
-	}
-	return int(done), err
+	var n uint32
+	err = syscall.WriteFile(c.handle, b, &n, overlapped)
+	return c.completeRequest(iodata{n, err}, c.writeDeadline, overlapped)
 }
 
 // Close closes the connection.

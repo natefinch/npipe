@@ -1,11 +1,9 @@
-// +build windows
-
 package npipe_test
 
 import (
 	"bufio"
 	"fmt"
-	"github.com/natefinch/npipe"
+	"github.com/aeckleder/npipe"
 	"net"
 )
 

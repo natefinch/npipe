@@ -1,5 +1,3 @@
-// +build windows
-
 package npipe
 
 import (
@@ -301,12 +299,12 @@ func TestGoRPC(t *testing.T) {
 	client := rpc.NewClient(conn)
 	defer client.Close()
 	req := "dummy"
-	rep := ""
-	if err = client.Call("RPCService.GetResponse", req, &rep); err != nil {
+	resp := ""
+	if err = client.Call("RPCService.GetResponse", req, &resp); err != nil {
 		t.Fatal("Error calling RPCService.GetResponse: %v", err)
 	}
-	if req != rep {
-		t.Fatal("Unexpected result (expected: %q, got: %q)", req, rep)
+	if req != resp {
+		t.Fatal("Unexpected result (expected: %q, got: %q)", req, resp)
 	}
 }
 
