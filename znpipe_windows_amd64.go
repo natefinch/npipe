@@ -9,11 +9,12 @@ import "syscall"
 var (
 	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
 
-	procCreateNamedPipeW = modkernel32.NewProc("CreateNamedPipeW")
-	procConnectNamedPipe = modkernel32.NewProc("ConnectNamedPipe")
+	procCreateNamedPipeW    = modkernel32.NewProc("CreateNamedPipeW")
+	procConnectNamedPipe    = modkernel32.NewProc("ConnectNamedPipe")
 	procDisconnectNamedPipe = modkernel32.NewProc("DisconnectNamedPipe")
-	procWaitNamedPipeW = modkernel32.NewProc("WaitNamedPipeW")
-
+	procWaitNamedPipeW      = modkernel32.NewProc("WaitNamedPipeW")
+	procCreateEventW        = modkernel32.NewProc("CreateEventW")
+	procGetOverlappedResult = modkernel32.NewProc("GetOverlappedResult")
 )
 
 func createNamedPipe(name *uint16, openMode uint32, pipeMode uint32, maxInstances uint32, outBufSize uint32, inBufSize uint32, defaultTimeout uint32, sa *syscall.SecurityAttributes) (handle syscall.Handle, err error) {
@@ -65,4 +66,45 @@ func waitNamedPipe(name *uint16, timeout uint32) (err error) {
 	return
 }
 
+func createEvent(sa *syscall.SecurityAttributes, manualReset bool, initialState bool, name *uint16) (handle syscall.Handle, err error) {
+	var _p0 uint32
+	if manualReset {
+		_p0 = 1
+	} else {
+		_p0 = 0
+	}
+	var _p1 uint32
+	if initialState {
+		_p1 = 1
+	} else {
+		_p1 = 0
+	}
+	r0, _, e1 := syscall.Syscall6(procCreateEventW.Addr(), 4, uintptr(unsafe.Pointer(sa)), uintptr(_p0), uintptr(_p1), uintptr(unsafe.Pointer(name)), 0, 0)
+	handle = syscall.Handle(r0)
+	if handle == syscall.InvalidHandle {
+		if e1 != 0 {
+			err = error(e1)
+		} else {
+			err = syscall.EINVAL
+		}
+	}
+	return
+}
 
+func getOverlappedResult(handle syscall.Handle, overlapped *syscall.Overlapped, transferred *uint32, wait bool) (err error) {
+	var _p0 uint32
+	if wait {
+		_p0 = 1
+	} else {
+		_p0 = 0
+	}
+	r1, _, e1 := syscall.Syscall6(procGetOverlappedResult.Addr(), 4, uintptr(handle), uintptr(unsafe.Pointer(overlapped)), uintptr(unsafe.Pointer(transferred)), uintptr(_p0), 0, 0)
+	if r1 == 0 {
+		if e1 != 0 {
+			err = error(e1)
+		} else {
+			err = syscall.EINVAL
+		}
+	}
+	return
+}
