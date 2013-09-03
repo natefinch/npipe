@@ -3,7 +3,7 @@ package npipe_test
 import (
 	"bufio"
 	"fmt"
-	"github.com/aeckleder/npipe"
+	"github.com/natefinch/npipe"
 	"net"
 )
 
