@@ -307,6 +307,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer syscall.CloseHandle(overlapped.HEvent)
 	if err := connectNamedPipe(handle, overlapped); err != nil && err != error_pipe_connected {
 		if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
 			_, err = waitForCompletion(handle, overlapped)
@@ -391,6 +392,7 @@ func (c *PipeConn) Read(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer syscall.CloseHandle(overlapped.HEvent)
 	var n uint32
 	err = syscall.ReadFile(c.handle, b, &n, overlapped)
 	return c.completeRequest(iodata{n, err}, c.readDeadline, overlapped)
@@ -402,6 +404,7 @@ func (c *PipeConn) Write(b []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	defer syscall.CloseHandle(overlapped.HEvent)
 	var n uint32
 	err = syscall.WriteFile(c.handle, b, &n, overlapped)
 	return c.completeRequest(iodata{n, err}, c.writeDeadline, overlapped)
