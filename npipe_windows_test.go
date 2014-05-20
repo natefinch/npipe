@@ -77,6 +77,22 @@ func TestBadListen(t *testing.T) {
 	}
 }
 
+// TestDoubleListen makes sure we can't listen to the same address twice.
+func TestDoubleListen(t *testing.T) {
+	address := `\\.\pipe\TestDoubleListen`
+	ln1, err := Listen(address)
+	if err != nil {
+		t.Fatalf("Listen(%q): %v", address, err)
+	}
+	defer ln1.Close()
+
+	ln2, err := Listen(address)
+	if err == nil {
+		ln2.Close()
+		t.Fatalf("second Listen on %q succeeded.", address)
+	}
+}
+
 // Test that PipeConn's read deadline works correctly
 func TestReadDeadline(t *testing.T) {
 	address := `\\.\pipe\TestReadDeadline`
@@ -333,6 +349,13 @@ func listenAndClose(address string, t *testing.T) {
 // and then dial into it with several clients in succession
 func TestCommonUseCase(t *testing.T) {
 	addrs := []string{`\\.\pipe\TestCommonUseCase`, `\\127.0.0.1\pipe\TestCommonUseCase`}
+	// always listen on the . version, since IP won't work for listening
+	ln, err := Listen(addrs[0])
+	if err != nil {
+		t.Fatalf("Listen(%q) failed: %v", addrs[0], err)
+	}
+	defer ln.Close()
+
 	for _, address := range addrs {
 		convos := 5
 		clients := 10
@@ -341,12 +364,6 @@ func TestCommonUseCase(t *testing.T) {
 		quit := make(chan bool)
 
 		go aggregateDones(done, quit, clients)
-
-		// always listen on the . version, since IP won't work for listening
-		ln, err := Listen(addrs[0])
-		if err != nil {
-			t.Fatal("Error starting to listen on pipe: ", err)
-		}
 
 		for x := 0; x < clients; x++ {
 			go startClient(address, done, convos, t)

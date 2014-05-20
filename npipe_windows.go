@@ -254,7 +254,7 @@ func dial(address string, timeout uint32) (*PipeConn, error) {
 //
 // Listen will return a PipeError for an incorrectly formatted pipe name.
 func Listen(address string) (*PipeListener, error) {
-	handle, err := createPipe(address)
+	handle, err := createPipe(address, true)
 	if err == error_invalid_name {
 		return nil, badAddr(address)
 	}
@@ -295,7 +295,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	handle := l.handle
 	if handle == 0 {
 		var err error
-		handle, err = createPipe(string(l.addr))
+		handle, err = createPipe(string(l.addr), false)
 		if err != nil {
 			return nil, err
 		}
@@ -459,16 +459,21 @@ func (a PipeAddr) String() string {
 	return string(a)
 }
 
-// createPipe is a helper function to make sure we always create pipes with the same arguments,
-// since subsequent calls to create pipe need to use the same arguments as the first one.
-func createPipe(address string) (syscall.Handle, error) {
+// createPipe is a helper function to make sure we always create pipes
+// with the same arguments, since subsequent calls to create pipe need
+// to use the same arguments as the first one. If first is set, fail
+// if the pipe already exists.
+func createPipe(address string, first bool) (syscall.Handle, error) {
 	n, err := syscall.UTF16PtrFromString(address)
 	if err != nil {
 		return 0, err
 	}
-
+	mode := uint32(pipe_access_duplex | syscall.FILE_FLAG_OVERLAPPED)
+	if first {
+		mode |= file_flag_first_pipe_instance
+	}
 	return createNamedPipe(n,
-		pipe_access_duplex|syscall.FILE_FLAG_OVERLAPPED,
+		mode,
 		pipe_type_byte,
 		pipe_unlimited_instances,
 		512, 512, 0, nil)
