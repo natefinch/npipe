@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -165,7 +164,7 @@ func TestReadDeadline(t *testing.T) {
 	if end.Before(deadline) {
 		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
 	}
-	if end.Sub(deadline) > time.Millisecond {
+	if end.Sub(deadline) > 500*time.Millisecond {
 		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'",
 			deadline, end)
 	}
@@ -236,7 +235,7 @@ func TestWriteDeadline(t *testing.T) {
 	if end.Before(deadline) {
 		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
 	}
-	if end.Sub(deadline) > time.Millisecond {
+	if end.Sub(deadline) > 500*time.Millisecond {
 		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'",
 			deadline, end)
 	}
@@ -351,7 +350,7 @@ func TestGoRPC(t *testing.T) {
 			conn, err := ln.Accept()
 			if err != nil {
 				// Ignore errors produced by a closed listener.
-				if !isErrClosing(err) {
+				if err != ErrClosed {
 					t.Errorf("ln.Accept(): %v", err.Error())
 				}
 				break
@@ -447,6 +446,9 @@ func aggregateDones(done, quit chan bool, total int) {
 func startServer(ln *PipeListener, iter int, t *testing.T) {
 	for {
 		conn, err := ln.Accept()
+		if err == ErrClosed {
+			return
+		}
 		if err != nil {
 			t.Fatalf("Error accepting connection: %v", err)
 		}
@@ -530,8 +532,4 @@ func exists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, err
-}
-
-func isErrClosing(err error) bool {
-	return err == closedPipe
 }

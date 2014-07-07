@@ -43,7 +43,6 @@ package npipe
 //sys cancelIoEx(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = CancelIoEx
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -100,7 +99,9 @@ const (
 	error_io_incomplete syscall.Errno = 0x3e4
 )
 
-var closedPipe = PipeError{"use of closed network connection", false}
+// ErrClosed is the error returned by PipeListener.Accept when Close is called
+// on the PipeListener.
+var ErrClosed = PipeError{"Pipe has been closed.", false}
 
 // PipeError is an error related to a call to a pipe
 type PipeError struct {
@@ -339,7 +340,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 		if err == syscall.ERROR_OPERATION_ABORTED {
 			// Return error compatible to net.Listener.Accept() in case the
 			// listener was closed.
-			return nil, closedPipe
+			return nil, ErrClosed
 		}
 		if err != nil {
 			return nil, err
