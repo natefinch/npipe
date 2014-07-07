@@ -9,7 +9,7 @@ import (
 	"net/rpc"
 	"os"
 	"path/filepath"
-
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,7 +72,7 @@ func TestBadListen(t *testing.T) {
 				address, err)
 		}
 		if ln != nil {
-			t.Error("Listening on '%s' returned non-nil listener.", address)
+			t.Errorf("Listening on '%s' returned non-nil listener.", address)
 		}
 	}
 }
@@ -93,6 +93,40 @@ func TestDoubleListen(t *testing.T) {
 	}
 }
 
+// TestCancelListen tests whether Accept() can be cancelled by closing the listener.
+func TestCancelAccept(t *testing.T) {
+	address := `\\.\pipe\TestCancelListener`
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatalf("Listen(%q): %v", address, err)
+	}
+	cancelled := make(chan struct{}, 0)
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			t.Fatalf("Unexpected incoming connection: %v", conn)
+			conn.Close()
+		}
+		cancelled <- struct{}{}
+	}()
+	// Close listener after 20ms. This should give the go routine enough time to be actually
+	// waiting for incoming connections inside ln.Accept().
+	time.AfterFunc(20*time.Millisecond, func() {
+		if err := ln.Close(); err != nil {
+			t.Fatalf("Error closing listener: %v", err)
+		}
+	})
+	// Any Close() should abort the ln.Accept() call within 100ms.
+	// We fail with a timeout otherwise, to avoid blocking forever on a failing test.
+	timeout := time.After(100 * time.Millisecond)
+	select {
+	case <-cancelled:
+		// This is what should happen.
+	case <-timeout:
+		t.Fatal("Timeout trying to cancel accept.")
+	}
+}
+
 // Test that PipeConn's read deadline works correctly
 func TestReadDeadline(t *testing.T) {
 	address := `\\.\pipe\TestReadDeadline`
@@ -104,7 +138,7 @@ func TestReadDeadline(t *testing.T) {
 
 	c, err := Dial(address)
 	if err != nil {
-		t.Fatal("Error dialing into pipe: ", err)
+		t.Fatalf("Error dialing into pipe: %v", err)
 	}
 	if c == nil {
 		t.Fatal("Unexpected nil connection from Dial")
@@ -115,7 +149,7 @@ func TestReadDeadline(t *testing.T) {
 	msg, err := bufio.NewReader(c).ReadString('\n')
 	end := time.Now()
 	if msg != "" {
-		t.Error("Pipe read timeout returned a non-empty message: ", msg)
+		t.Errorf("Pipe read timeout returned a non-empty message: %s", msg)
 	}
 	if err == nil {
 		t.Error("Pipe read timeout returned nil error")
@@ -142,14 +176,14 @@ func TestReadDeadline(t *testing.T) {
 func listenAndWait(address string, wg sync.WaitGroup, t *testing.T) {
 	ln, err := Listen(address)
 	if err != nil {
-		t.Fatal("Error starting to listen on pipe: ", err)
+		t.Fatalf("Error starting to listen on pipe: %v", err)
 	}
 	if ln == nil {
 		t.Fatal("Got unexpected nil listener")
 	}
 	conn, err := ln.Accept()
 	if err != nil {
-		t.Fatal("Error accepting connection: ", err)
+		t.Fatalf("Error accepting connection: %v", err)
 	}
 	if conn == nil {
 		t.Fatal("Got unexpected nil connection")
@@ -169,7 +203,7 @@ func TestWriteDeadline(t *testing.T) {
 	defer wg.Done()
 	c, err := Dial(address)
 	if err != nil {
-		t.Fatal("Error dialing into pipe: ", err)
+		t.Fatalf("Error dialing into pipe: %v", err)
 	}
 	if c == nil {
 		t.Fatal("Unexpected nil connection from Dial")
@@ -182,7 +216,7 @@ func TestWriteDeadline(t *testing.T) {
 	c.SetWriteDeadline(deadline)
 	buffer := make([]byte, 1<<16)
 	if _, err = io.ReadFull(rand.Reader, buffer); err != nil {
-		t.Fatal("Couldn't generate random buffer: %v", err)
+		t.Fatalf("Couldn't generate random buffer: %v", err)
 	}
 	_, err = c.Write(buffer)
 
@@ -215,7 +249,7 @@ func TestDialTimeout(t *testing.T) {
 	c, err := DialTimeout(`\\.\pipe\TestDialTimeout`, timeout)
 	end := time.Now()
 	if c != nil {
-		t.Error("DialTimeout returned non-nil connection: ", c)
+		t.Errorf("DialTimeout returned non-nil connection: %v", c)
 	}
 	if err == nil {
 		t.Error("DialTimeout returned nil error after timeout")
@@ -271,13 +305,13 @@ func TestDial(t *testing.T) {
 		wg.Done()
 		conn, err := Dial(address)
 		if err != nil {
-			t.Fatal("Got unexpected error from Dial: ", err)
+			t.Fatalf("Got unexpected error from Dial: %v", err)
 		}
 		if conn == nil {
 			t.Fatal("Got unexpected nil connection from Dial")
 		}
 		if err := conn.Close(); err != nil {
-			t.Fatal("Got unexpected error from conection.Close(): ", err)
+			t.Fatalf("Got unexpected error from conection.Close(): %v", err)
 		}
 	}()
 
@@ -300,27 +334,46 @@ func TestGoRPC(t *testing.T) {
 	address := `\\.\pipe\TestRPC`
 	ln, err := Listen(address)
 	if err != nil {
-		t.Fatal("Error listening on %q: %v", address, err)
+		t.Fatalf("Error listening on %q: %v", address, err)
 	}
 	defer ln.Close()
+	waitExit := make(chan bool)
+	defer func() {
+		ln.Close()
+		<-waitExit
+	}()
 	server := rpc.NewServer()
 	service := &RPCService{}
 	server.Register(service)
 	go server.Accept(ln)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				// Ignore errors produced by a closed listener.
+				if !isErrClosing(err) {
+					t.Errorf("ln.Accept(): %v", err.Error())
+				}
+				break
+			}
+			go server.ServeConn(conn)
+		}
+		waitExit <- true
+	}()
 	var conn *PipeConn
 	conn, err = Dial(address)
 	if err != nil {
-		t.Fatal("Error dialing %q: %v", address, err)
+		t.Fatalf("Error dialing %q: %v", address, err)
 	}
 	client := rpc.NewClient(conn)
 	defer client.Close()
 	req := "dummy"
 	resp := ""
 	if err = client.Call("RPCService.GetResponse", req, &resp); err != nil {
-		t.Fatal("Error calling RPCService.GetResponse: %v", err)
+		t.Fatalf("Error calling RPCService.GetResponse: %v", err)
 	}
 	if req != resp {
-		t.Fatal("Unexpected result (expected: %q, got: %q)", req, resp)
+		t.Fatalf("Unexpected result (expected: %q, got: %q)", req, resp)
 	}
 }
 
@@ -328,20 +381,20 @@ func TestGoRPC(t *testing.T) {
 func listenAndClose(address string, t *testing.T) {
 	ln, err := Listen(address)
 	if err != nil {
-		t.Fatal("Got unexpected error from Listen: ", err)
+		t.Fatalf("Got unexpected error from Listen: %v", err)
 	}
 	if ln == nil {
 		t.Fatal("Got unexpected nil listener from Listen")
 	}
 	conn, err := ln.Accept()
 	if err != nil {
-		t.Fatal("Got unexpected error from Accept: ", err)
+		t.Fatalf("Got unexpected error from Accept: %v", err)
 	}
 	if conn == nil {
 		t.Fatal("Got unexpected nil connection from Accept")
 	}
 	if err := conn.Close(); err != nil {
-		t.Fatal("Got unexpected error from conection.Close(): ", err)
+		t.Fatalf("Got unexpected error from conection.Close(): %v", err)
 	}
 }
 
@@ -395,7 +448,7 @@ func startServer(ln *PipeListener, iter int, t *testing.T) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			t.Fatal("Error accepting connection: ", err)
+			t.Fatalf("Error accepting connection: %v", err)
 		}
 		go handleConnection(conn, iter, t)
 	}
@@ -408,18 +461,18 @@ func handleConnection(conn net.Conn, convos int, t *testing.T) {
 	for x := 0; x < convos; x++ {
 		msg, err := r.ReadString('\n')
 		if err != nil {
-			t.Fatal("Error reading from server connection: ", err)
+			t.Fatalf("Error reading from server connection: %v", err)
 		}
 		if msg != clientMsg {
 			t.Fatalf("Read incorrect message from client. Expected '%s', got '%s'", clientMsg, msg)
 		}
 
 		if _, err := fmt.Fprint(conn, serverMsg); err != nil {
-			t.Fatal("Error on server writing to pipe: ", err)
+			t.Fatalf("Error on server writing to pipe: %v", err)
 		}
 	}
 	if err := conn.Close(); err != nil {
-		t.Fatal("Error closing server side of connection: ", err)
+		t.Fatalf("Error closing server side of connection: %v", err)
 	}
 }
 
@@ -439,12 +492,12 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 	r := bufio.NewReader(conn)
 	for x := 0; x < convos; x++ {
 		if _, err := fmt.Fprint(conn, clientMsg); err != nil {
-			t.Fatal("Error on client writing to pipe: ", err)
+			t.Fatalf("Error on client writing to pipe: %v", err)
 		}
 
 		msg, err := r.ReadString('\n')
 		if err != nil {
-			t.Fatal("Error reading from client connection: ", err)
+			t.Fatalf("Error reading from client connection: %v", err)
 		}
 		if msg != serverMsg {
 			t.Fatalf("Read incorrect message from server. Expected '%s', got '%s'", serverMsg, msg)
@@ -452,7 +505,7 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 	}
 
 	if err := conn.Close(); err != nil {
-		t.Fatal("Error closing client side of pipe", err)
+		t.Fatalf("Error closing client side of pipe %v", err)
 	}
 	done <- true
 }
@@ -462,7 +515,7 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 func asyncdial(address string, c chan *PipeConn, t *testing.T) {
 	conn, err := Dial(address)
 	if err != nil {
-		t.Fatal("Error from dial: ", err)
+		t.Fatalf("Error from dial: %v", err)
 	}
 	c <- conn
 }
@@ -477,4 +530,8 @@ func exists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func isErrClosing(err error) bool {
+	return err == closedPipe
 }
