@@ -9,7 +9,7 @@ Windows Pipe documentation at http://msdn.microsoft.com/en-us/library/windows/de
 Note that the code lives at github.com/natefinch/npipe (v2 branch) but should be
 imported as gopkg.in/natefinch/npipe.v2 (the package name is still npipe).
 
-Supports the net.Conn interface and the rpc server.
+Implements the net.Conn interface and supports rpc over the connection.
 
 ### Notes 
 
