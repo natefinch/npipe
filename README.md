@@ -1,5 +1,8 @@
 npipe
 =====
+!!! This package is now deprecated and not under active development.  See the v2
+branch in github for the currently supported branch. !!!
+
 A Windows named pipe implementation written in pure Go.
 
 Documentation at http://godoc.org/github.com/natefinch/npipe
