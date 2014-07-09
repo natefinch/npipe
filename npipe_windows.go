@@ -4,10 +4,23 @@
 
 // Package npipe provides a pure Go wrapper around Windows named pipes.
 //
-// See http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
+// Windows named pipe documentation: http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
 //
-// npipe provides an interface based on stdlib's net package, with Dial, Listen, and Accept
-// functions, as well as associated implementations of net.Conn and net.Listener
+// Note that the code lives at https://github.com/natefinch/npipe (v2 branch)
+// but should be imported as gopkg.in/natefinch/npipe.v2 (the package name is
+// still npipe).
+//
+// npipe provides an interface based on stdlib's net package, with Dial, Listen,
+// and Accept functions, as well as associated implementations of net.Conn and
+// net.Listener.  It supports rpc over the connection.
+//
+// Notes
+//
+// * Deadlines for reading/writing to the connection are only functional in Windows Vista/Server 2008 and above, due to limitations with the Windows API.
+//
+// * The pipes support byte mode only (no support for message mode)
+//
+// Examples
 //
 // The Dial function connects a client to a named pipe:
 //   conn, err := npipe.Dial(`\\.\pipe\mypipename`)
@@ -98,6 +111,9 @@ const (
 
 	error_io_incomplete syscall.Errno = 0x3e4
 )
+
+var _ net.Conn = (*PipeConn)(nil)
+var _ net.Listener = (*PipeListener)(nil)
 
 // ErrClosed is the error returned by PipeListener.Accept when Close is called
 // on the PipeListener.
