@@ -2,9 +2,9 @@ npipe  [![Build status](https://ci.appveyor.com/api/projects/status/00vuepirsot2
 =====
 Package npipe provides a pure Go wrapper around Windows named pipes.
 
-Windows named pipe documentation: a href="http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780">http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780</a>
+Windows named pipe documentation: http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
 
-Note that the code lives at a href="https://github.com/natefinch/npipe">https://github.com/natefinch/npipe</a> (v2 branch)
+Note that the code lives at https://github.com/natefinch/npipe (v2 branch)
 but should be imported as gopkg.in/natefinch/npipe.v2 (the package name is
 still npipe).
 
