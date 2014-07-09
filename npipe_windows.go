@@ -251,8 +251,8 @@ func dial(address string, timeout uint32) (*PipeConn, error) {
 	return &PipeConn{handle: handle, addr: PipeAddr(address)}, nil
 }
 
-// New returns a new PipeListener that will listen on a pipe with the given address.
-// The address must be of the form \\.\pipe\<name>
+// Listen returns a new PipeListener that will listen on a pipe with the given
+// address. The address must be of the form \\.\pipe\<name>
 //
 // Listen will return a PipeError for an incorrectly formatted pipe name.
 func Listen(address string) (*PipeListener, error) {
