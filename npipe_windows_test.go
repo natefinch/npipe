@@ -161,13 +161,7 @@ func TestReadDeadline(t *testing.T) {
 			t.Error("Pipe read timeout didn't return an error indicating the timeout")
 		}
 	}
-	if end.Before(deadline) {
-		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
-	}
-	if end.Sub(deadline) > 500*time.Millisecond {
-		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'",
-			deadline, end)
-	}
+	checkDeadline(deadline, end, t)
 }
 
 // listenAndWait simply sets up a pipe listener that does nothing and closes after the waitgroup
@@ -232,13 +226,7 @@ func TestWriteDeadline(t *testing.T) {
 			t.Error("Pipe write timeout didn't return an error indicating the timeout")
 		}
 	}
-	if end.Before(deadline) {
-		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
-	}
-	if end.Sub(deadline) > 500*time.Millisecond {
-		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'",
-			deadline, end)
-	}
+	checkDeadline(deadline, end, t)
 }
 
 // TestDialTimeout tests that the DialTimeout function will actually timeout correctly
@@ -261,12 +249,7 @@ func TestDialTimeout(t *testing.T) {
 			t.Error("Dial timeout didn't return an error indicating the timeout")
 		}
 	}
-	if end.Before(deadline) {
-		t.Fatalf("Ended before deadline '%s', ended at '%s'", deadline, end)
-	}
-	if end.Sub(deadline) > time.Millisecond {
-		t.Fatalf("Ended more than a millisecond after deadline '%s', ended at '%s'", deadline, end)
-	}
+	checkDeadline(deadline, end, t)
 }
 
 // TestDialNoTimeout tests that the DialTimeout function will properly wait for the pipe and
@@ -290,7 +273,7 @@ func TestDialNoTimeout(t *testing.T) {
 		t.Error("DialTimeout returned unexpected non-nil error: ", err)
 	}
 	if end.After(deadline) {
-		t.Fatalf("Ended after deadline '%s', ended at '%s'", deadline, end)
+		t.Fatalf("Ended %v after deadline", end.Sub(deadline))
 	}
 }
 
@@ -532,4 +515,18 @@ func exists(path string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func checkDeadline(deadline, end time.Time, t *testing.T) {
+	if end.Before(deadline) {
+		t.Fatalf("Ended %v before deadline", deadline.Sub(end))
+	}
+	diff := end.Sub(deadline)
+
+	// we need a huge fudge factor here because Windows has really poor
+	// resolution for timeouts, and in practice, the timeout can be 400ms or
+	// more after the expected timeout.
+	if diff > 500*time.Millisecond {
+		t.Fatalf("Ended significantly (%v) after deadline", diff)
+	}
 }
