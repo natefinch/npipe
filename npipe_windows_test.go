@@ -255,7 +255,7 @@ func TestDialTimeout(t *testing.T) {
 // TestDialNoTimeout tests that the DialTimeout function will properly wait for the pipe and
 // connect when it is available
 func TestDialNoTimeout(t *testing.T) {
-	timeout := time.Millisecond * 150
+	timeout := time.Millisecond * 500
 	address := `\\.\pipe\TestDialNoTimeout`
 	go func() {
 		<-time.After(50 * time.Millisecond)
