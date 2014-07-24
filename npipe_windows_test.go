@@ -92,6 +92,22 @@ func TestDoubleListen(t *testing.T) {
 	}
 }
 
+// TestListenCloseListen tests whether Close() actually closes a named pipe properly.
+func TestListenCloseListen(t *testing.T) {
+	address := `\\.\pipe\TestListenCloseListen`
+	ln1, err := Listen(address)
+	if err != nil {
+		t.Fatalf("Listen(%q): %v", address, err)
+	}
+	ln1.Close()
+
+	ln2, err := Listen(address)
+	if err != nil {
+		t.Fatalf("second Listen on %q failed.", address)
+	}
+	ln2.Close()
+}
+
 // TestCancelListen tests whether Accept() can be cancelled by closing the listener.
 func TestCancelAccept(t *testing.T) {
 	address := `\\.\pipe\TestCancelListener`
