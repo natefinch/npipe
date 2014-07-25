@@ -382,7 +382,6 @@ func (l *PipeListener) Close() error {
 			return err
 		}
 		l.handle = 0
-		return err
 	}
 	l.acceptMutex.Lock()
 	defer l.acceptMutex.Unlock()
@@ -392,6 +391,16 @@ func (l *PipeListener) Close() error {
 		if err := cancelIoEx(l.acceptHandle, l.acceptOverlapped); err != nil {
 			return err
 		}
+		err := syscall.CloseHandle(l.acceptOverlapped.HEvent)
+		if err != nil {
+			return err
+		}
+		l.acceptOverlapped.HEvent = 0
+		err = syscall.CloseHandle(l.acceptHandle)
+		if err != nil {
+			return err
+		}
+		l.acceptHandle = 0
 	}
 	return nil
 }

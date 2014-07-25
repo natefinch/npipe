@@ -108,6 +108,55 @@ func TestListenCloseListen(t *testing.T) {
 	ln2.Close()
 }
 
+// TestCloseFileHandles tests that all PipeListener handles are actualy closed after
+// calling Close()
+func TestCloseFileHandles(t *testing.T) {
+	address := `\\.\pipe\TestCloseFileHandles`
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatalf("Error listening on %q: %v", address, err)
+	}
+	defer ln.Close()
+	server := rpc.NewServer()
+	service := &RPCService{}
+	server.Register(service)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				// Ignore errors produced by a closed listener.
+				if err != ErrClosed {
+					t.Errorf("ln.Accept(): %v", err.Error())
+				}
+				break
+			}
+			go server.ServeConn(conn)
+		}
+	}()
+	conn, err := Dial(address)
+	if err != nil {
+		t.Fatalf("Error dialing %q: %v", address, err)
+	}
+	client := rpc.NewClient(conn)
+	defer client.Close()
+	req := "dummy"
+	resp := ""
+	if err = client.Call("RPCService.GetResponse", req, &resp); err != nil {
+		t.Fatalf("Error calling RPCService.GetResponse: %v", err)
+	}
+	if req != resp {
+		t.Fatalf("Unexpected result (expected: %q, got: %q)", req, resp)
+	}
+	ln.Close()
+
+	if ln.acceptHandle != 0 {
+		t.Fatalf("Failed to close acceptHandle")
+	}
+	if ln.acceptOverlapped.HEvent != 0 {
+		t.Fatalf("Failed to close acceptOverlapped handle")
+	}
+}
+
 // TestCancelListen tests whether Accept() can be cancelled by closing the listener.
 func TestCancelAccept(t *testing.T) {
 	address := `\\.\pipe\TestCancelListener`
