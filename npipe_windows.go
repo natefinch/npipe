@@ -374,6 +374,13 @@ func (l *PipeListener) Close() error {
 	l.closed = true
 	if l.handle != 0 {
 		err := disconnectNamedPipe(l.handle)
+		if err != nil {
+			return err
+		}
+		err = syscall.CloseHandle(l.handle)
+		if err != nil {
+			return err
+		}
 		l.handle = 0
 		return err
 	}
