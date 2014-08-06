@@ -4,10 +4,23 @@
 
 // Package npipe provides a pure Go wrapper around Windows named pipes.
 //
-// See http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
+// Windows named pipe documentation: http://msdn.microsoft.com/en-us/library/windows/desktop/aa365780
 //
-// npipe provides an interface based on stdlib's net package, with Dial, Listen, and Accept
-// functions, as well as associated implementations of net.Conn and net.Listener
+// Note that the code lives at https://github.com/natefinch/npipe (v2 branch)
+// but should be imported as gopkg.in/natefinch/npipe.v2 (the package name is
+// still npipe).
+//
+// npipe provides an interface based on stdlib's net package, with Dial, Listen,
+// and Accept functions, as well as associated implementations of net.Conn and
+// net.Listener.  It supports rpc over the connection.
+//
+// Notes
+//
+// * Deadlines for reading/writing to the connection are only functional in Windows Vista/Server 2008 and above, due to limitations with the Windows API.
+//
+// * The pipes support byte mode only (no support for message mode)
+//
+// Examples
 //
 // The Dial function connects a client to a named pipe:
 //   conn, err := npipe.Dial(`\\.\pipe\mypipename`)
@@ -40,12 +53,13 @@ package npipe
 //sys waitNamedPipe(name *uint16, timeout uint32) (err error) = WaitNamedPipeW
 //sys createEvent(sa *syscall.SecurityAttributes, manualReset bool, initialState bool, name *uint16) (handle syscall.Handle, err error) [failretval==syscall.InvalidHandle] = CreateEventW
 //sys getOverlappedResult(handle syscall.Handle, overlapped *syscall.Overlapped, transferred *uint32, wait bool) (err error) = GetOverlappedResult
+//sys cancelIoEx(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = CancelIoEx
 
 import (
 	"fmt"
 	"io"
 	"net"
-	"os"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -97,6 +111,13 @@ const (
 
 	error_io_incomplete syscall.Errno = 0x3e4
 )
+
+var _ net.Conn = (*PipeConn)(nil)
+var _ net.Listener = (*PipeListener)(nil)
+
+// ErrClosed is the error returned by PipeListener.Accept when Close is called
+// on the PipeListener.
+var ErrClosed = PipeError{"Pipe has been closed.", false}
 
 // PipeError is an error related to a call to a pipe
 type PipeError struct {
@@ -187,10 +208,7 @@ func isPipeNotReady(err error) bool {
 	// File Not Found means the server hasn't created the pipe yet.
 	// Neither is a fatal error.
 
-	if err, ok := err.(*os.PathError); ok {
-		return err.Err == error_pipe_busy
-	}
-	return err == syscall.ERROR_FILE_NOT_FOUND
+	return err == syscall.ERROR_FILE_NOT_FOUND || err == error_pipe_busy
 }
 
 // newOverlapped creates a structure used to track asynchronous
@@ -249,8 +267,8 @@ func dial(address string, timeout uint32) (*PipeConn, error) {
 	return &PipeConn{handle: handle, addr: PipeAddr(address)}, nil
 }
 
-// New returns a new PipeListener that will listen on a pipe with the given address.
-// The address must be of the form \\.\pipe\<name>
+// Listen returns a new PipeListener that will listen on a pipe with the given
+// address. The address must be of the form \\.\pipe\<name>
 //
 // Listen will return a PipeError for an incorrectly formatted pipe name.
 func Listen(address string) (*PipeListener, error) {
@@ -261,7 +279,10 @@ func Listen(address string) (*PipeListener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &PipeListener{PipeAddr(address), handle, false}, nil
+	return &PipeListener{
+		addr:   PipeAddr(address),
+		handle: handle,
+	}, nil
 }
 
 // PipeListener is a named pipe listener. Clients should typically
@@ -270,6 +291,15 @@ type PipeListener struct {
 	addr   PipeAddr
 	handle syscall.Handle
 	closed bool
+
+	// acceptHandle contains the current handle waiting for
+	// an incoming connection or nil.
+	acceptHandle syscall.Handle
+	// acceptOverlapped is set before waiting on a connection.
+	// If not waiting, it is nil.
+	acceptOverlapped *syscall.Overlapped
+	// acceptMutex protects the handle and overlapped structure.
+	acceptMutex sync.Mutex
 }
 
 // Accept implements the Accept method in the net.Listener interface; it
@@ -310,7 +340,23 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	defer syscall.CloseHandle(overlapped.HEvent)
 	if err := connectNamedPipe(handle, overlapped); err != nil && err != error_pipe_connected {
 		if err == error_io_incomplete || err == syscall.ERROR_IO_PENDING {
+			l.acceptMutex.Lock()
+			l.acceptOverlapped = overlapped
+			l.acceptHandle = handle
+			l.acceptMutex.Unlock()
+			defer func() {
+				l.acceptMutex.Lock()
+				l.acceptOverlapped = nil
+				l.acceptHandle = 0
+				l.acceptMutex.Unlock()
+			}()
+
 			_, err = waitForCompletion(handle, overlapped)
+		}
+		if err == syscall.ERROR_OPERATION_ABORTED {
+			// Return error compatible to net.Listener.Accept() in case the
+			// listener was closed.
+			return nil, ErrClosed
 		}
 		if err != nil {
 			return nil, err
@@ -328,8 +374,33 @@ func (l *PipeListener) Close() error {
 	l.closed = true
 	if l.handle != 0 {
 		err := disconnectNamedPipe(l.handle)
+		if err != nil {
+			return err
+		}
+		err = syscall.CloseHandle(l.handle)
+		if err != nil {
+			return err
+		}
 		l.handle = 0
-		return err
+	}
+	l.acceptMutex.Lock()
+	defer l.acceptMutex.Unlock()
+	if l.acceptOverlapped != nil && l.acceptHandle != 0 {
+		// Cancel the pending IO. This call does not block, so it is safe
+		// to hold onto the mutex above.
+		if err := cancelIoEx(l.acceptHandle, l.acceptOverlapped); err != nil {
+			return err
+		}
+		err := syscall.CloseHandle(l.acceptOverlapped.HEvent)
+		if err != nil {
+			return err
+		}
+		l.acceptOverlapped.HEvent = 0
+		err = syscall.CloseHandle(l.acceptHandle)
+		if err != nil {
+			return err
+		}
+		l.acceptHandle = 0
 	}
 	return nil
 }
