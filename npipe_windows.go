@@ -272,7 +272,16 @@ func dial(address string, timeout uint32) (*PipeConn, error) {
 //
 // Listen will return a PipeError for an incorrectly formatted pipe name.
 func Listen(address string) (*PipeListener, error) {
-	handle, err := createPipe(address, true)
+	return ListenAttributes(address, nil)
+}
+
+// ListenAttributes returns a new PipeListener that will listen on a pipe with
+// the given address using custom SecurityAttributes. The address must be of
+// the form \.\pipe\<name>
+//
+// Listen will return a PipeError for an incorrectly formatted pipe name.
+func ListenAttributes(address string, sa *syscall.SecurityAttributes) (*PipeListener, error) {
+	handle, err := createPipe(address, true, sa)
 	if err == error_invalid_name {
 		return nil, badAddr(address)
 	}
@@ -280,8 +289,9 @@ func Listen(address string) (*PipeListener, error) {
 		return nil, err
 	}
 	return &PipeListener{
-		addr:   PipeAddr(address),
-		handle: handle,
+		addr:               PipeAddr(address),
+		handle:             handle,
+		securityAttributes: sa,
 	}, nil
 }
 
@@ -300,6 +310,9 @@ type PipeListener struct {
 	acceptOverlapped *syscall.Overlapped
 	// acceptMutex protects the handle and overlapped structure.
 	acceptMutex sync.Mutex
+	// securityAttributes defines the security attributes of the named pipe.
+	// If it is nil, the Windows default is used.
+	securityAttributes *syscall.SecurityAttributes
 }
 
 // Accept implements the Accept method in the net.Listener interface; it
@@ -325,7 +338,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	handle := l.handle
 	if handle == 0 {
 		var err error
-		handle, err = createPipe(string(l.addr), false)
+		handle, err = createPipe(string(l.addr), false, l.securityAttributes)
 		if err != nil {
 			return nil, err
 		}
@@ -534,7 +547,7 @@ func (a PipeAddr) String() string {
 // with the same arguments, since subsequent calls to create pipe need
 // to use the same arguments as the first one. If first is set, fail
 // if the pipe already exists.
-func createPipe(address string, first bool) (syscall.Handle, error) {
+func createPipe(address string, first bool, sa *syscall.SecurityAttributes) (syscall.Handle, error) {
 	n, err := syscall.UTF16PtrFromString(address)
 	if err != nil {
 		return 0, err
@@ -547,7 +560,7 @@ func createPipe(address string, first bool) (syscall.Handle, error) {
 		mode,
 		pipe_type_byte,
 		pipe_unlimited_instances,
-		512, 512, 0, nil)
+		512, 512, 0, sa)
 }
 
 func badAddr(addr string) PipeError {
