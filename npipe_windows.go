@@ -306,10 +306,10 @@ type PipeListener struct {
 // Accept implements the Accept method in the net.Listener interface; it
 // waits for the next call and returns a generic net.Conn.
 func (l *PipeListener) Accept() (net.Conn, error) {
-	c, err := l.acceptPipe()
+	c, err := l.AcceptPipe()
 	for err == error_no_data {
 		// Ignore clients that connect and immediately disconnect.
-		c, err = l.acceptPipe()
+		c, err = l.AcceptPipe()
 	}
 	if err != nil {
 		return nil, err
@@ -317,10 +317,10 @@ func (l *PipeListener) Accept() (net.Conn, error) {
 	return c, nil
 }
 
-// acceptPipe accepts the next incoming call and returns the new connection.
+// AcceptPipe accepts the next incoming call and returns the new connection.
 // It might return an error if a client connected and immediately cancelled
 // the connection.
-func (l *PipeListener) acceptPipe() (*PipeConn, error) {
+func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if l == nil || l.addr == "" || l.closed {
 		return nil, syscall.EINVAL
 	}
