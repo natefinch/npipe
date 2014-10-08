@@ -53,8 +53,9 @@ const (
 
 	nmpwait_wait_forever = 0xFFFFFFFF
 
-	// this not-an-error that occurs if a client connects to the pipe between
+	// the two not-an-errors below occur if a client connects to the pipe between
 	// the server's CreateNamedPipe and ConnectNamedPipe calls.
+	error_no_data        syscall.Errno = 0xE8
 	error_pipe_connected syscall.Errno = 0x217
 	error_pipe_busy      syscall.Errno = 0xE7
 	error_sem_timeout    syscall.Errno = 0x79
@@ -259,6 +260,10 @@ type PipeListener struct {
 // waits for the next call and returns a generic net.Conn.
 func (l *PipeListener) Accept() (net.Conn, error) {
 	c, err := l.AcceptPipe()
+	for err == error_no_data {
+		// Ignore clients that connect and immediately disconnect.
+		c, err = l.AcceptPipe()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -266,6 +271,8 @@ func (l *PipeListener) Accept() (net.Conn, error) {
 }
 
 // AcceptPipe accepts the next incoming call and returns the new connection.
+// It might return an error if a client connected and immediately cancelled
+// the connection.
 func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if l == nil || l.addr == "" || l.closed {
 		return nil, syscall.EINVAL

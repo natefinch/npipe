@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/rpc"
 	"os"
@@ -90,6 +91,51 @@ func TestDoubleListen(t *testing.T) {
 		ln2.Close()
 		t.Fatalf("second Listen on %q succeeded.", address)
 	}
+}
+
+// TestPipeConnected tests whether we correctly handle clients connecting
+// and then closing the connection between creating and connecting the
+// pipe on the server side.
+func TestPipeConnected(t *testing.T) {
+	address := `\\.\pipe\TestPipeConnected`
+	ln, err := Listen(address)
+	if err != nil {
+		t.Fatalf("Listen(%q): %v", address, err)
+	}
+	defer ln.Close()
+
+	// Create a client connection and close it immediately.
+	clientConn, err := Dial(address)
+	if err != nil {
+		t.Fatalf("Error from dial: %v", err)
+	}
+	clientConn.Close()
+
+	content := "test"
+	go func() {
+		// Now create a real connection and send some data.
+		clientConn, err := Dial(address)
+		if err != nil {
+			t.Fatalf("Error from dial: %v", err)
+		}
+		if _, err := clientConn.Write([]byte(content)); err != nil {
+			t.Fatalf("Error writing to pipe: %v", err)
+		}
+		clientConn.Close()
+	}()
+
+	serverConn, err := ln.Accept()
+	if err != nil {
+		t.Fatalf("Error from accept: %v", err)
+	}
+	result, err := ioutil.ReadAll(serverConn)
+	if err != nil {
+		t.Fatalf("Error from ReadAll: %v", err)
+	}
+	if string(result) != content {
+		t.Fatalf("Got %s, expected: %s", string(result), content)
+	}
+	serverConn.Close()
 }
 
 // TestListenCloseListen tests whether Close() actually closes a named pipe properly.
