@@ -242,9 +242,11 @@ func Listen(address string) (*PipeListener, error) {
 // PipeListener is a named pipe listener. Clients should typically
 // use variables of type net.Listener instead of assuming named pipe.
 type PipeListener struct {
-	addr   PipeAddr
-	handle syscall.Handle
-	closed bool
+	addr PipeAddr
+
+	listenerMutex sync.Mutex
+	handle        syscall.Handle
+	closed        bool
 
 	// acceptHandle contains the current handle waiting for
 	// an incoming connection or nil.
@@ -274,7 +276,9 @@ func (l *PipeListener) Accept() (net.Conn, error) {
 // It might return an error if a client connected and immediately cancelled
 // the connection.
 func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
+	l.listenerMutex.Lock()
 	if l == nil || l.addr == "" || l.closed {
+		l.listenerMutex.Unlock()
 		return nil, syscall.EINVAL
 	}
 
@@ -287,11 +291,13 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 		var err error
 		handle, err = createPipe(string(l.addr), false)
 		if err != nil {
+			l.listenerMutex.Unlock()
 			return nil, err
 		}
 	} else {
 		l.handle = 0
 	}
+	l.listenerMutex.Unlock()
 
 	overlapped, err := newOverlapped()
 	if err != nil {
@@ -328,21 +334,28 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 // Close stops listening on the address.
 // Already Accepted connections are not closed.
 func (l *PipeListener) Close() error {
+	l.listenerMutex.Lock()
 	if l.closed {
+		l.listenerMutex.Unlock()
 		return nil
 	}
 	l.closed = true
+
 	if l.handle != 0 {
 		err := disconnectNamedPipe(l.handle)
 		if err != nil {
+			l.listenerMutex.Unlock()
 			return err
 		}
 		err = syscall.CloseHandle(l.handle)
 		if err != nil {
+			l.listenerMutex.Unlock()
 			return err
 		}
 		l.handle = 0
 	}
+	l.listenerMutex.Unlock()
+
 	l.acceptMutex.Lock()
 	defer l.acceptMutex.Unlock()
 	if l.acceptOverlapped != nil && l.acceptHandle != 0 {
