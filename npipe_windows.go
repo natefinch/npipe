@@ -7,6 +7,7 @@ package npipe
 //sys createEvent(sa *syscall.SecurityAttributes, manualReset bool, initialState bool, name *uint16) (handle syscall.Handle, err error) [failretval==syscall.InvalidHandle] = CreateEventW
 //sys getOverlappedResult(handle syscall.Handle, overlapped *syscall.Overlapped, transferred *uint32, wait bool) (err error) = GetOverlappedResult
 //sys cancelIoEx(handle syscall.Handle, overlapped *syscall.Overlapped) (err error) = CancelIoEx
+//sys waitForMultipleObjectsEx(handle []syscall.Handle, bWaitAll bool, dwMilliseconds uint32, bAlertable bool) (err error) = WaitForMultipleObjectsEx
 
 import (
 	"fmt"
@@ -178,8 +179,9 @@ func newOverlapped() (*syscall.Overlapped, error) {
 // waitForCompletion waits for an asynchronous I/O request referred to by overlapped to complete.
 // This function returns the number of bytes transferred by the operation and an error code if
 // applicable (nil otherwise).
-func waitForCompletion(handle syscall.Handle, overlapped *syscall.Overlapped) (uint32, error) {
-	_, err := syscall.WaitForSingleObject(overlapped.HEvent, syscall.INFINITE)
+func waitForCompletion(handle syscall.Handle, overlapped *syscall.Overlapped, otherEvents... syscall.Handle) (uint32, error) {
+	err := waitForMultipleObjectsEx(append([]syscall.Handle{overlapped.HEvent}, otherEvents...),
+		false, syscall.INFINITE, true)
 	if err != nil {
 		return 0, err
 	}
@@ -233,9 +235,14 @@ func Listen(address string) (*PipeListener, error) {
 	if err != nil {
 		return nil, err
 	}
+	closeEvent, err := newOverlapped()
+	if err != nil {
+		return nil, err
+	}
 	return &PipeListener{
 		addr:   PipeAddr(address),
 		handle: handle,
+		closeEvent: closeEvent,
 	}, nil
 }
 
@@ -244,7 +251,7 @@ func Listen(address string) (*PipeListener, error) {
 type PipeListener struct {
 	addr   PipeAddr
 	handle syscall.Handle
-	closed bool
+	closeEvent *syscall.Overlapped
 
 	// acceptHandle contains the current handle waiting for
 	// an incoming connection or nil.
@@ -274,7 +281,7 @@ func (l *PipeListener) Accept() (net.Conn, error) {
 // It might return an error if a client connected and immediately cancelled
 // the connection.
 func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
-	if l == nil || l.addr == "" || l.closed {
+	if l == nil || l.addr == "" || l.closeEvent.HEvent == 0 {
 		return nil, syscall.EINVAL
 	}
 
@@ -311,7 +318,7 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 				l.acceptMutex.Unlock()
 			}()
 
-			_, err = waitForCompletion(handle, overlapped)
+			_, err = waitForCompletion(handle, overlapped, l.closeEvent.HEvent)
 		}
 		if err == syscall.ERROR_OPERATION_ABORTED {
 			// Return error compatible to net.Listener.Accept() in case the
@@ -328,10 +335,15 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 // Close stops listening on the address.
 // Already Accepted connections are not closed.
 func (l *PipeListener) Close() error {
-	if l.closed {
+	if l.closeEvent.HEvent != 0 {
+		err := syscall.CloseHandle(l.closeEvent.HEvent)
+		if err != nil {
+			return err
+		}
+		l.closeEvent.HEvent = 0
+	} else {
 		return nil
 	}
-	l.closed = true
 	if l.handle != 0 {
 		err := disconnectNamedPipe(l.handle)
 		if err != nil {
