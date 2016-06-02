@@ -288,16 +288,16 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	// have to create a new handle each time
 	handle := l.handle
 	if handle == 0 {
+		l.listenerMutex.Unlock()
 		var err error
 		handle, err = createPipe(string(l.addr), false)
 		if err != nil {
-			l.listenerMutex.Unlock()
 			return nil, err
 		}
 	} else {
 		l.handle = 0
+		l.listenerMutex.Unlock()
 	}
-	l.listenerMutex.Unlock()
 
 	overlapped, err := newOverlapped()
 	if err != nil {
