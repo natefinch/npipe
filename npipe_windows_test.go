@@ -582,7 +582,7 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 	var conn *PipeConn
 	select {
 	case conn = <-c:
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Client timed out waiting for dial to resolve")
 	}
 	r := bufio.NewReader(conn)
