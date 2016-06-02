@@ -438,7 +438,6 @@ func TestGoRPC(t *testing.T) {
 	server := rpc.NewServer()
 	service := &RPCService{}
 	server.Register(service)
-	go server.Accept(ln)
 	go func() {
 		for {
 			conn, err := ln.Accept()

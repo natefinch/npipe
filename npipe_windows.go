@@ -281,7 +281,7 @@ func (l *PipeListener) Accept() (net.Conn, error) {
 // It might return an error if a client connected and immediately cancelled
 // the connection.
 func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
-	if l == nil || l.addr == "" || l.closeEvent == nil {
+	if l == nil || l.addr == "" || l.closeEvent.HEvent == 0 {
 		return nil, syscall.EINVAL
 	}
 
@@ -335,12 +335,12 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 // Close stops listening on the address.
 // Already Accepted connections are not closed.
 func (l *PipeListener) Close() error {
-	if l.closeEvent != nil {
+	if l.closeEvent.HEvent != 0 {
 		err := syscall.CloseHandle(l.closeEvent.HEvent)
 		if err != nil {
 			return err
 		}
-		l.closeEvent = nil
+		l.closeEvent.HEvent = 0
 	} else {
 		return nil
 	}
