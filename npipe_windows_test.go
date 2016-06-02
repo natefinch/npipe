@@ -3,6 +3,7 @@ package npipe
 import (
 	"bufio"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -198,6 +199,8 @@ func TestCloseFileHandles(t *testing.T) {
 	if ln.acceptHandle != 0 {
 		t.Fatalf("Failed to close acceptHandle")
 	}
+	ln.acceptMutex.Lock()
+	defer ln.acceptMutex.Unlock()
 	if ln.acceptOverlapped.HEvent != 0 {
 		t.Fatalf("Failed to close acceptOverlapped handle")
 	}
@@ -512,15 +515,25 @@ func TestCommonUseCase(t *testing.T) {
 		go aggregateDones(done, quit, clients)
 
 		for x := 0; x < clients; x++ {
-			go startClient(address, done, convos, t)
+			go func() {
+				err := startClient(address, done, convos)
+				if err != nil {
+					panic(err)
+				}
+			}()
 		}
 
-		go startServer(ln, convos, t)
+		go func() {
+			err := startServer(ln, convos)
+			if err != nil {
+				panic(err)
+			}
+		}()
 
 		select {
 		case <-quit:
 		case <-time.After(time.Second):
-			t.Fatal("Failed to receive quit message after a reasonable timeout")
+			panic("Failed to receive quit message after a reasonable timeout")
 		}
 	}
 }
@@ -537,81 +550,88 @@ func aggregateDones(done, quit chan bool, total int) {
 }
 
 // startServer accepts connections and spawns goroutines to handle them
-func startServer(ln *PipeListener, iter int, t *testing.T) {
+func startServer(ln *PipeListener, iter int) error {
 	for {
 		conn, err := ln.Accept()
 		if err == ErrClosed {
-			return
+			return nil
 		}
 		if err != nil {
-			t.Fatalf("Error accepting connection: %v", err)
+			return fmt.Errorf("Error accepting connection: %v", err)
 		}
-		go handleConnection(conn, iter, t)
+		go func() {
+			err := handleConnection(conn, iter)
+			if err != nil {
+				panic(err)
+			}
+		}()
 	}
 }
 
 // handleConnection is the goroutine that handles connections on the server side
 // it expects to read a message and then write a message, convos times, before exiting.
-func handleConnection(conn net.Conn, convos int, t *testing.T) {
+func handleConnection(conn net.Conn, convos int) error {
 	r := bufio.NewReader(conn)
 	for x := 0; x < convos; x++ {
 		msg, err := r.ReadString('\n')
 		if err != nil {
-			t.Fatalf("Error reading from server connection: %v", err)
+			return fmt.Errorf("Error reading from server connection: %v", err)
 		}
 		if msg != clientMsg {
-			t.Fatalf("Read incorrect message from client. Expected '%s', got '%s'", clientMsg, msg)
+			return fmt.Errorf("Read incorrect message from client. Expected '%s', got '%s'", clientMsg, msg)
 		}
 
 		if _, err := fmt.Fprint(conn, serverMsg); err != nil {
-			t.Fatalf("Error on server writing to pipe: %v", err)
+			return fmt.Errorf("Error on server writing to pipe: %v", err)
 		}
 	}
 	if err := conn.Close(); err != nil {
-		t.Fatalf("Error closing server side of connection: %v", err)
+		return fmt.Errorf("Error closing server side of connection: %v", err)
 	}
+	return nil
 }
 
 // startClient waits on a pipe at the given address. It expects to write a message and then
 // read a message from the pipe, convos times, and then sends a message on the done
 // channel
-func startClient(address string, done chan bool, convos int, t *testing.T) {
+func startClient(address string, done chan bool, convos int) error {
 	c := make(chan *PipeConn)
-	go asyncdial(address, c, t)
+	go asyncdial(address, c)
 
 	var conn *PipeConn
 	select {
 	case conn = <-c:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Client timed out waiting for dial to resolve")
+		return errors.New("Client timed out waiting for dial to resolve")
 	}
 	r := bufio.NewReader(conn)
 	for x := 0; x < convos; x++ {
 		if _, err := fmt.Fprint(conn, clientMsg); err != nil {
-			t.Fatalf("Error on client writing to pipe: %v", err)
+			fmt.Errorf("Error on client writing to pipe: %v", err)
 		}
 
 		msg, err := r.ReadString('\n')
 		if err != nil {
-			t.Fatalf("Error reading from client connection: %v", err)
+			fmt.Errorf("Error reading from client connection: %v", err)
 		}
 		if msg != serverMsg {
-			t.Fatalf("Read incorrect message from server. Expected '%s', got '%s'", serverMsg, msg)
+			fmt.Errorf("Read incorrect message from server. Expected '%s', got '%s'", serverMsg, msg)
 		}
 	}
 
 	if err := conn.Close(); err != nil {
-		t.Fatalf("Error closing client side of pipe %v", err)
+		fmt.Errorf("Error closing client side of pipe %v", err)
 	}
 	done <- true
+	return nil
 }
 
 // asyncdial is a helper that dials and returns the connection on the given channel.
 // this is useful for being able to give dial a timeout
-func asyncdial(address string, c chan *PipeConn, t *testing.T) {
+func asyncdial(address string, c chan *PipeConn) {
 	conn, err := Dial(address)
 	if err != nil {
-		t.Fatalf("Error from dial: %v", err)
+		panic(fmt.Errorf("Error from dial: %v", err))
 	}
 	c <- conn
 }
