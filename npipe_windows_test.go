@@ -434,11 +434,13 @@ func TestGoRPC(t *testing.T) {
 	defer func() {
 		ln.Close()
 		<-waitExit
+
 	}()
 	server := rpc.NewServer()
 	service := &RPCService{}
 	server.Register(service)
 	go server.Accept(ln)
+
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -453,6 +455,7 @@ func TestGoRPC(t *testing.T) {
 		}
 		waitExit <- true
 	}()
+
 	var conn *PipeConn
 	conn, err = Dial(address)
 	if err != nil {
