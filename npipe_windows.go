@@ -381,6 +381,11 @@ func (l *PipeListener) Close() error {
 // Addr returns the listener's network address, a PipeAddr.
 func (l *PipeListener) Addr() net.Addr { return l.addr }
 
+// PipeHandle returns the underlying pipe handle, a syscall.Handle.
+func (l *PipeListener) PipeHandle() syscall.Handle {
+	return l.handle
+}
+
 // PipeConn is the implementation of the net.Conn interface for named pipe connections.
 type PipeConn struct {
 	handle syscall.Handle
@@ -462,6 +467,11 @@ func (c *PipeConn) Close() error {
 // LocalAddr returns the local network address.
 func (c *PipeConn) LocalAddr() net.Addr {
 	return c.addr
+}
+
+// PipeHandle returns the underlying pipe handle, a syscall.Handle.
+func (c *PipeConn) PipeHandle() syscall.Handle {
+	return c.handle
 }
 
 // RemoteAddr returns the remote network address.
