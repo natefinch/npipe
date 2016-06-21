@@ -210,8 +210,11 @@ func TestCancelAccept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Listen(%q): %v", address, err)
 	}
-	cancelled := make(chan struct{}, 0)
+
+	cancelled := make(chan struct{})
+	started := make(chan struct{})
 	go func() {
+		close(started)
 		conn, _ := ln.Accept()
 		if conn != nil {
 			t.Fatalf("Unexpected incoming connection: %v", conn)
@@ -219,6 +222,7 @@ func TestCancelAccept(t *testing.T) {
 		}
 		cancelled <- struct{}{}
 	}()
+	<-started
 	// Close listener after 20ms. This should give the go routine enough time to be actually
 	// waiting for incoming connections inside ln.Accept().
 	time.AfterFunc(20*time.Millisecond, func() {
@@ -429,17 +433,15 @@ func TestGoRPC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error listening on %q: %v", address, err)
 	}
-	defer ln.Close()
-	waitExit := make(chan bool)
+	waitExit := make(chan struct{})
 	defer func() {
 		ln.Close()
 		<-waitExit
 	}()
-	server := rpc.NewServer()
-	service := &RPCService{}
-	server.Register(service)
-	go server.Accept(ln)
+
 	go func() {
+		server := rpc.NewServer()
+		server.Register(&RPCService{})
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -451,17 +453,16 @@ func TestGoRPC(t *testing.T) {
 			}
 			go server.ServeConn(conn)
 		}
-		waitExit <- true
+		close(waitExit)
 	}()
-	var conn *PipeConn
-	conn, err = Dial(address)
+	conn, err := Dial(address)
 	if err != nil {
 		t.Fatalf("Error dialing %q: %v", address, err)
 	}
 	client := rpc.NewClient(conn)
 	defer client.Close()
 	req := "dummy"
-	resp := ""
+	var resp string
 	if err = client.Call("RPCService.GetResponse", req, &resp); err != nil {
 		t.Fatalf("Error calling RPCService.GetResponse: %v", err)
 	}
@@ -506,34 +507,32 @@ func TestCommonUseCase(t *testing.T) {
 		convos := 5
 		clients := 10
 
-		done := make(chan bool)
-		quit := make(chan bool)
-
-		go aggregateDones(done, quit, clients)
+		wg := sync.WaitGroup{}
 
 		for x := 0; x < clients; x++ {
-			go startClient(address, done, convos, t)
+			wg.Add(1)
+			go startClient(address, &wg, convos, t)
 		}
 
 		go startServer(ln, convos, t)
 
 		select {
-		case <-quit:
+		case <-wait(&wg):
+		// good!
 		case <-time.After(time.Second):
-			t.Fatal("Failed to receive quit message after a reasonable timeout")
+			t.Fatal("Failed to finish after a reasonable timeout")
 		}
 	}
 }
 
-// aggregateDones simply aggregates messages from the done channel
-// until it sees total, and then sends a message on the quit channel
-func aggregateDones(done, quit chan bool, total int) {
-	dones := 0
-	for dones < total {
-		<-done
-		dones++
-	}
-	quit <- true
+// wait simply waits on the waitgroup and closes the returned channel when done.
+func wait(wg *sync.WaitGroup) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	return done
 }
 
 // startServer accepts connections and spawns goroutines to handle them
@@ -575,15 +574,17 @@ func handleConnection(conn net.Conn, convos int, t *testing.T) {
 // startClient waits on a pipe at the given address. It expects to write a message and then
 // read a message from the pipe, convos times, and then sends a message on the done
 // channel
-func startClient(address string, done chan bool, convos int, t *testing.T) {
+func startClient(address string, wg *sync.WaitGroup, convos int, t *testing.T) {
+	defer wg.Done()
 	c := make(chan *PipeConn)
 	go asyncdial(address, c, t)
 
 	var conn *PipeConn
 	select {
 	case conn = <-c:
-	case <-time.After(250 * time.Millisecond):
-		t.Fatal("Client timed out waiting for dial to resolve")
+	case <-time.After(time.Second):
+		// Yes this is a long timeout, but sometimes it really does take a long time.
+		t.Fatalf("Client timed out waiting for dial to resolve")
 	}
 	r := bufio.NewReader(conn)
 	for x := 0; x < convos; x++ {
@@ -603,7 +604,6 @@ func startClient(address string, done chan bool, convos int, t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Fatalf("Error closing client side of pipe %v", err)
 	}
-	done <- true
 }
 
 // asyncdial is a helper that dials and returns the connection on the given channel.
