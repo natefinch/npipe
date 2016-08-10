@@ -401,10 +401,12 @@ type iodata struct {
 // the content of iodata is returned.
 func (c *PipeConn) completeRequest(data iodata, deadline *time.Time, overlapped *syscall.Overlapped) (int, error) {
 	if data.err == error_io_incomplete || data.err == syscall.ERROR_IO_PENDING {
-		var timer <-chan time.Time
+		var timer time.Timer
+		var timerC <-chan time.Time
 		if deadline != nil {
 			if timeDiff := deadline.Sub(time.Now()); timeDiff > 0 {
-				timer = time.After(timeDiff)
+				timer = time.NewTimer(timeDiff)
+				timerC = timer.C
 			}
 		}
 		done := make(chan iodata)
@@ -414,7 +416,10 @@ func (c *PipeConn) completeRequest(data iodata, deadline *time.Time, overlapped 
 		}()
 		select {
 		case data = <-done:
-		case <-timer:
+			if timer != nil {
+				timer.Stop()
+			}
+		case <-timerC:
 			syscall.CancelIoEx(c.handle, overlapped)
 			data = iodata{0, timeout(c.addr.String())}
 		}
