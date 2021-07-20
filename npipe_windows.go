@@ -402,15 +402,19 @@ type iodata struct {
 func (c *PipeConn) completeRequest(data iodata, deadline *time.Time, overlapped *syscall.Overlapped) (int, error) {
 	if data.err == error_io_incomplete || data.err == syscall.ERROR_IO_PENDING {
 		var timer <-chan time.Time
+		var timeDiff time.Duration
 		if deadline != nil {
-			if timeDiff := deadline.Sub(time.Now()); timeDiff > 0 {
+			if timeDiff = deadline.Sub(time.Now()); timeDiff > 0 {
 				timer = time.After(timeDiff)
 			}
 		}
 		done := make(chan iodata)
 		go func() {
 			n, err := waitForCompletion(c.handle, overlapped)
-			done <- iodata{n, err}
+			select {
+			case done <- iodata{n, err}:
+			case <-time.After(time.Second * timeDiff):
+			}
 		}()
 		select {
 		case data = <-done:
