@@ -305,7 +305,11 @@ func (l *PipeListener) AcceptPipe() (*PipeConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer syscall.CloseHandle(overlapped.HEvent)
+	defer func(){
+		if overlapped.HEvent != 0 {
+			syscall.CloseHandle(overlapped.HEvent)
+		}
+	}()
 	err = connectNamedPipe(handle, overlapped)
 	if err == nil || err == error_pipe_connected {
 		return &PipeConn{handle: handle, addr: l.addr}, nil
